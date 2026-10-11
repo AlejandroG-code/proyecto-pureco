@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { fetchEstado } from '../plcConnection'
+import { fetchEstado, cancelOrderByError } from '../plcConnection'
 
 const NODES = [
   { id: 'almacen', label: 'Almacén', x: 95, y: 50, dbField: 'almacen' },
@@ -15,41 +15,90 @@ export default function OrderProgress() {
   const location = useLocation()
   const piece = location.state?.piece
   
+  // Por defecto todo en SQL inicia en estado 1
   const [dbState, setDbState] = useState({
     almacen: 1,
-    banda: 3,
-    mitsubishi: 3,
-    lugar_entrega: 3
+    banda: 1,
+    mitsubishi: 1,
+    lugar_entrega: 1
   })
 
   // Música de elevador
   const audioRef = useRef(null)
 
+  // Heartbeat cada 2 segundos leyendo el estado actual desde SQL
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = 0.5;
       audioRef.current.play().catch(e => console.log('Audio autoplay prevented:', e));
     }
 
+    let isMounted = true;
     const loadEstado = async () => {
       const estado = await fetchEstado();
-      if (estado) {
-        setDbState(estado);
+      if (!isMounted || !estado) return;
+
+      const nextState = {
+        almacen: Number(estado.almacen ?? 1),
+        banda: Number(estado.banda ?? 1),
+        mitsubishi: Number(estado.mitsubishi ?? 1),
+        lugar_entrega: Number(estado.lugar_entrega ?? 1)
+      };
+
+      setDbState(nextState);
+
+      // Si alguna estación entra en estado 4 (Error), cancelar pedido, guardar error en BD y mostrar pantalla de rechazo/error
+      const errorEntry = Object.entries(nextState).find(([, val]) => val === 4);
+      if (errorEntry) {
+        isMounted = false;
+        if (audioRef.current) audioRef.current.pause();
+        await cancelOrderByError(errorEntry[0]);
+        navigate('/confirmation', {
+          replace: true,
+          state: { success: false, isError: true, piece }
+        });
       }
     };
 
     loadEstado();
-    const interval = setInterval(loadEstado, 1000);
+    const interval = setInterval(loadEstado, 2000);
 
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [navigate, piece]);
+
+  const STATION_ORDER = ['almacen', 'banda', 'mitsubishi', 'lugar_entrega'];
 
   const getStatus = (nodeId) => {
     if (nodeId === 'fin') {
-      return dbState.lugar_entrega === 2 ? 2 : 3;
+      const allCompleted = STATION_ORDER.every(field => Number(dbState[field]) === 2);
+      return allCompleted ? 2 : 3;
     }
-    const field = NODES.find(n => n.id === nodeId)?.dbField;
-    return dbState[field] !== undefined ? Number(dbState[field]) : 3;
+
+    const node = NODES.find(n => n.id === nodeId);
+    if (!node) return 3;
+
+    const field = node.dbField;
+    const rawStatus = dbState[field] !== undefined ? Number(dbState[field]) : 1;
+
+    // Si se asigna manualmente 0 (Desenergizado) o 4 (Error), mostrarlo de inmediato
+    if (rawStatus === 0 || rawStatus === 4) {
+      return rawStatus;
+    }
+
+    // Verificar si todas las estaciones previas ya tienen asignado el estado 2 (Terminado)
+    const stationIdx = STATION_ORDER.indexOf(field);
+    for (let i = 0; i < stationIdx; i++) {
+      const prevField = STATION_ORDER[i];
+      if (Number(dbState[prevField]) !== 2) {
+        // Aún no puede avanzar a esta estación hasta que la anterior sea 2
+        return 3;
+      }
+    }
+
+    return rawStatus;
   };
 
   const renderIcon = (status) => {
@@ -122,28 +171,18 @@ export default function OrderProgress() {
     }
   }
 
-  const isFinished = getStatus('rampa') === 2;
+  const isFinished = getStatus('fin') === 2;
 
   const handleButtonClick = () => {
-    if (isFinished) {
-      if (audioRef.current) audioRef.current.pause();
-      navigate('/delivered', { state: { piece } });
-    } else {
-      // Si aún no termina en BD (modo prueba local), avanza suavemente de etapa
-      setDbState(prev => {
-        if (prev.almacen !== 2) return { ...prev, almacen: 2, banda: 1 };
-        if (prev.banda !== 2) return { ...prev, banda: 2, mitsubishi: 1 };
-        if (prev.mitsubishi !== 2) return { ...prev, mitsubishi: 2, lugar_entrega: 1 };
-        if (prev.lugar_entrega !== 2) return { ...prev, lugar_entrega: 2 };
-        return prev;
-      });
-    }
+    if (!isFinished) return;
+    if (audioRef.current) audioRef.current.pause();
+    navigate('/delivered', { state: { piece } });
   };
 
   return (
     <div className="flex flex-col items-center justify-between min-h-[calc(100vh-24px)] w-full max-w-sm mx-auto select-none">
       {/* Música de elevador local */}
-      <audio ref={audioRef} loop src="/assets/videoplayback.webm" />
+      <audio ref={audioRef} loop src="/assets/Hotel.mp3" />
 
       {/* Barra decorativa superior */}
       <div className="w-full h-5 bg-[#b3d8ff] rounded-xl shrink-0" />
@@ -240,11 +279,12 @@ export default function OrderProgress() {
       {/* Botón inferior "Ver el pedido" */}
       <div className="w-full flex justify-center px-2 mt-2">
         <button
+          disabled={!isFinished}
           onClick={handleButtonClick}
-          className={`bg-[#003b75] text-[#a6d1ff] font-extrabold py-3.5 px-8 rounded-full shadow-md w-full text-xl tracking-wide transition-all duration-300 active:scale-95 ${
+          className={`bg-[#003b75] text-[#a6d1ff] font-extrabold py-3.5 px-8 rounded-full shadow-md w-full text-xl tracking-wide transition-all duration-300 ${
             isFinished
-              ? 'hover:bg-[#004b93] hover:text-white hover:shadow-lg animate-[pulse_2s_ease-in-out_infinite]'
-              : 'hover:bg-[#004b93]'
+              ? 'hover:bg-[#004b93] hover:text-white hover:shadow-lg active:scale-95 cursor-pointer animate-[pulse_2s_ease-in-out_infinite]'
+              : 'opacity-90 cursor-not-allowed'
           }`}
         >
           Ver el pedido

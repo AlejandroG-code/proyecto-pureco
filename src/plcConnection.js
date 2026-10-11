@@ -14,13 +14,6 @@ export const fetchUltimoPedido = async () => {
 
 export const requestOrder = async (pieceId, category, quantity) => {
   try {
-    // Verificar si hay uno en espera
-    const ultimo = await fetchUltimoPedido();
-    if (ultimo && ultimo.en_espera === 1) {
-      // Ya hay un pedido en proceso, rechazar
-      return false;
-    }
-
     // Convertimos category string al ID
     let id_categoria = 1; // Electrónica
     if (category === 'Arte') id_categoria = 2;
@@ -32,10 +25,10 @@ export const requestOrder = async (pieceId, category, quantity) => {
       body: JSON.stringify({ id_categoria })
     });
     const data = await res.json();
-    return data.success;
+    return Boolean(data.success);
   } catch (error) {
     console.error('Error enviando orden', error);
-    // Para entorno sin servidor, simular éxito siempre y cuando no sepamos que está ocupado
+    // Para entorno sin servidor, simular éxito
     return true; 
   }
 };
@@ -48,6 +41,35 @@ export const fetchEstado = async () => {
   } catch (error) {
     console.error('Error estado', error);
     return null;
+  }
+};
+
+export const updateEstado = async (nuevoEstado) => {
+  try {
+    const res = await fetch(`${API_URL}/estado`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nuevoEstado)
+    });
+    const data = await res.json();
+    return data.estado;
+  } catch (error) {
+    console.error('Error actualizando estado en SQL', error);
+    return null;
+  }
+};
+
+export const cancelOrderByError = async (estacion) => {
+  try {
+    await fetch(`${API_URL}/pedido/error`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estacion })
+    });
+    return true;
+  } catch (error) {
+    console.error('Error cancelando pedido por error:', error);
+    return false;
   }
 };
 
@@ -74,6 +96,30 @@ const CATEGORY_PIECES = {
   'Arte': ['acuarela', 'gises', 'plumones'],
   'Electrónica': ['computadora', 'celular', 'audifonos'],
   'Juguetes': ['legos', 'juegos_mesa', 'rompecabezas']
+};
+
+export const PIECE_BY_ALMACEN_ID = {
+  1: 'computadora',
+  2: 'celular',
+  3: 'audifonos',
+  4: 'acuarela',
+  5: 'gises',
+  6: 'plumones',
+  7: 'legos',
+  8: 'juegos_mesa',
+  9: 'rompecabezas'
+};
+
+export const ALMACEN_ID_BY_PIECE = {
+  computadora: 1,
+  celular: 2,
+  audifonos: 3,
+  acuarela: 4,
+  gises: 5,
+  plumones: 6,
+  legos: 7,
+  juegos_mesa: 8,
+  rompecabezas: 9
 };
 
 export const fetchDisponibilidad = async () => {
@@ -103,7 +149,19 @@ export const fetchDisponibilidad = async () => {
     const catRows = Array.isArray(data.categoria_piezas) ? data.categoria_piezas : [];
     const almRows = Array.isArray(data.almacen) ? data.almacen : [];
 
-    // 1. Evaluar tabla categoría_piezas (ID_categoria, nombre_categoria, cantidad)
+    // 1. Evaluar tabla Almacén por pieza individual (ID_almacen 1..9)
+    if (almRows.length > 0) {
+      for (const row of almRows) {
+        const idAlm = Number(row.ID_almacen ?? row.id_almacen);
+        const pieceId = PIECE_BY_ALMACEN_ID[idAlm];
+        const isDisp = Boolean(Number(row.disponible ?? row.Disponible ?? 0));
+        if (pieceId) {
+          pieces[pieceId] = isDisp;
+        }
+      }
+    }
+
+    // 2. Evaluar tabla categoría_piezas (ID_categoria, nombre_categoria, cantidad)
     for (const row of catRows) {
       const idCat = Number(row.ID_categoria ?? row.id_categoria);
       let catName = CATEGORY_BY_ID[idCat];
@@ -124,43 +182,37 @@ export const fetchDisponibilidad = async () => {
       }
     }
 
-    // 2. Evaluar tabla Almacén (ID_categoria, horizontal, vertical, disponible)
-    if (almRows.length > 0) {
-      const almByCategory = { 'Electrónica': [], 'Arte': [], 'Juguetes': [] };
-      for (const row of almRows) {
-        const idCat = Number(row.ID_categoria ?? row.id_categoria);
-        const catName = CATEGORY_BY_ID[idCat];
-        if (catName) {
-          almByCategory[catName].push(row);
-        }
-      }
-
-      for (const [catName, rows] of Object.entries(almByCategory)) {
-        if (rows.length > 0) {
-          const hasAnyAvailable = rows.some(
-            r => Boolean(Number(r.disponible ?? r.Disponible ?? 0))
-          );
-          if (!hasAnyAvailable) {
-            categories[catName] = false;
-          } else if (catRows.length === 0) {
-            categories[catName] = true;
-          }
-        }
-      }
-    }
-
-    // Sincronizar disponibilidad de piezas según su categoría
+    // 3. Sincronizar disponibilidad entre categorías y piezas individuales
     for (const [catName, catPieces] of Object.entries(CATEGORY_PIECES)) {
-      const isCatAvailable = categories[catName];
-      catPieces.forEach(pId => {
-        pieces[pId] = isCatAvailable;
-      });
+      if (categories[catName] === false) {
+        catPieces.forEach(pId => {
+          pieces[pId] = false;
+        });
+      } else {
+        const anyPieceAvailable = catPieces.some(pId => pieces[pId]);
+        categories[catName] = anyPieceAvailable;
+      }
     }
 
     return { categories, pieces };
   } catch (error) {
     console.error('Error obteniendo disponibilidad de piezas:', error);
     return defaultAvailability;
+  }
+};
+
+export const updateDisponibilidadPieza = async ({ id_almacen, id_categoria, disponible }) => {
+  try {
+    const res = await fetch(`${API_URL}/piezas/disponibilidad`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id_almacen, id_categoria, disponible })
+    });
+    const data = await res.json();
+    return data.success;
+  } catch (error) {
+    console.error('Error actualizando disponibilidad de pieza:', error);
+    return false;
   }
 };
 

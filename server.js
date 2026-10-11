@@ -14,15 +14,38 @@ const dbConfig = {
   database: 'clickgo' // asumiendo el nombre de bd, se puede cambiar luego
 };
 
-// 1. Crear un pedido
+// 1. Crear un pedido y reiniciar todo el Estado a 1
 app.post('/api/pedidos', async (req, res) => {
   const { id_categoria } = req.body;
   try {
     const connection = await mysql.createConnection(dbConfig);
+
+    // Cerrar cualquier pedido anterior que hubiera quedado en espera
+    await connection.execute(
+      'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+    );
+
+    // Insertar nuevo pedido en espera
     const [result] = await connection.execute(
       'INSERT INTO pedido_historico (ID_categoria, fecha_hora, en_espera) VALUES (?, NOW(), 1)',
       [id_categoria]
     );
+
+    // Reiniciar el estado de todas las estaciones a 1 cada vez que se hace un pedido nuevo
+    await connection.execute(
+      `INSERT INTO Estado (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
+       VALUES (1, 1, 1, 1, 1)
+       ON DUPLICATE KEY UPDATE
+         almacen = 1,
+         banda = 1,
+         mitsubishi = 1,
+         lugar_entrega = 1`
+    );
+
+    await connection.execute(
+      'INSERT INTO estado_historico (ID_estado, fecha_hora) VALUES (1, NOW())'
+    );
+
     await connection.end();
     res.json({ success: true, id_pedido: result.insertId });
   } catch (error) {
@@ -31,15 +54,32 @@ app.post('/api/pedidos', async (req, res) => {
   }
 });
 
-// 2. Obtener estado del pedido actual (para la vista de progreso)
+// 2. Obtener estado del pedido actual (para la vista de progreso y el heartbeat cada 2s)
 app.get('/api/estado', async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
-    await connection.end();
     if (rows.length > 0) {
-      res.json({ success: true, estado: rows[0] });
+      const est = rows[0];
+      const allDone =
+        Number(est.almacen) === 2 &&
+        Number(est.banda) === 2 &&
+        Number(est.mitsubishi) === 2 &&
+        Number(est.lugar_entrega) === 2;
+      const hasError = [est.almacen, est.banda, est.mitsubishi, est.lugar_entrega].some(
+        v => Number(v) === 4
+      );
+
+      if (allDone || hasError) {
+        await connection.execute(
+          'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+        );
+      }
+
+      await connection.end();
+      res.json({ success: true, estado: est });
     } else {
+      await connection.end();
       res.json({ success: true, estado: null });
     }
   } catch (error) {
@@ -48,10 +88,123 @@ app.get('/api/estado', async (req, res) => {
   }
 });
 
+// 2b. Actualizar manualmente el estado en SQL (desde la ventana de control manual)
+app.put('/api/estado', async (req, res) => {
+  const { almacen, banda, mitsubishi, lugar_entrega } = req.body;
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const vals = {
+      almacen: Number(almacen ?? 1),
+      banda: Number(banda ?? 1),
+      mitsubishi: Number(mitsubishi ?? 1),
+      lugar_entrega: Number(lugar_entrega ?? 1)
+    };
+
+    await connection.execute(
+      `INSERT INTO Estado (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
+       VALUES (1, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         almacen = VALUES(almacen),
+         banda = VALUES(banda),
+         mitsubishi = VALUES(mitsubishi),
+         lugar_entrega = VALUES(lugar_entrega)`,
+      [vals.almacen, vals.banda, vals.mitsubishi, vals.lugar_entrega]
+    );
+
+    // Registrar cambio en estado_historico
+    await connection.execute(
+      'INSERT INTO estado_historico (ID_estado, fecha_hora) VALUES (1, NOW())'
+    );
+
+    // Si alguna estación se puso en 4 (Error), guardar en la tabla alarmas y cancelar el pedido activo
+    const errorStations = Object.entries(vals)
+      .filter(([, v]) => v === 4)
+      .map(([k]) => k);
+
+    if (errorStations.length > 0) {
+      const desc = `Error en estación (${errorStations.join(', ')}) - Pedido cancelado`;
+      await connection.execute(
+        'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
+        [desc]
+      );
+      await connection.execute(
+        'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+      );
+    }
+
+    // Si todas las etapas llegaron a 2 (Terminado), liberar en_espera del pedido actual
+    if (
+      vals.almacen === 2 &&
+      vals.banda === 2 &&
+      vals.mitsubishi === 2 &&
+      vals.lugar_entrega === 2
+    ) {
+      await connection.execute(
+        'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+      );
+    }
+
+    const [rows] = await connection.execute('SELECT * FROM Estado WHERE ID_estado = 1');
+    await connection.end();
+    res.json({ success: true, estado: rows[0] });
+  } catch (error) {
+    console.error('Error al actualizar estado:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 2c. Cancelar pedido y registrar error en BD cuando el heartbeat detecta estado 4 desde SQL
+app.post('/api/pedido/error', async (req, res) => {
+  const { estacion } = req.body;
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const desc = `Error detectado en ${estacion || 'proceso'} - Pedido cancelado`;
+
+    // Verificar si ya se canceló el pedido actual para no duplicar alarmas si ya lo hizo PUT /api/estado
+    const [pedidosActivos] = await connection.execute(
+      'SELECT ID_pedido FROM pedido_historico WHERE en_espera = 1 LIMIT 1'
+    );
+
+    if (pedidosActivos.length > 0) {
+      await connection.execute(
+        'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
+        [desc]
+      );
+      await connection.execute(
+        'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+      );
+    }
+
+    await connection.end();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error al cancelar pedido por error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 3. Obtener estado de en_espera del ultimo pedido (para rechazo)
 app.get('/api/pedido/ultimo', async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
+
+    // Si en la tabla Estado el pedido anterior ya terminó (todo en 2) o tuvo error (4), liberar en_espera antes de consultar
+    const [estRows] = await connection.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
+    if (estRows.length > 0) {
+      const est = estRows[0];
+      const allDone =
+        Number(est.almacen) === 2 &&
+        Number(est.banda) === 2 &&
+        Number(est.mitsubishi) === 2 &&
+        Number(est.lugar_entrega) === 2;
+      const hasError = [est.almacen, est.banda, est.mitsubishi, est.lugar_entrega].some(
+        v => Number(v) === 4
+      );
+      if (allDone || hasError) {
+        await connection.execute('UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1');
+      }
+    }
+
     const [rows] = await connection.execute('SELECT * FROM pedido_historico ORDER BY ID_pedido DESC LIMIT 1');
     await connection.end();
     if (rows.length > 0) {
@@ -103,6 +256,50 @@ app.get('/api/piezas', async (req, res) => {
   }
 });
 
+// 4b. Actualizar disponibilidad de una pieza o categoría en Almacén y categoría_piezas
+app.put('/api/piezas/disponibilidad', async (req, res) => {
+  const { id_almacen, id_categoria, disponible } = req.body;
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const dispVal = Number(disponible) ? 1 : 0;
+
+    if (id_almacen !== undefined && id_almacen !== null) {
+      await connection.execute(
+        'UPDATE Almacen SET disponible = ? WHERE ID_almacen = ?',
+        [dispVal, Number(id_almacen)]
+      );
+    } else if (id_categoria !== undefined && id_categoria !== null) {
+      await connection.execute(
+        'UPDATE Almacen SET disponible = ? WHERE ID_categoria = ?',
+        [dispVal, Number(id_categoria)]
+      );
+    }
+
+    // Recalcular y sincronizar la columna cantidad en categoria_piezas según las piezas disponibles en Almacen
+    await connection.execute(`
+      UPDATE categoria_piezas c
+      SET c.cantidad = (
+        SELECT COUNT(*)
+        FROM Almacen a
+        WHERE a.ID_categoria = c.ID_categoria AND a.disponible = 1
+      )
+    `);
+
+    const [categoriasRows] = await connection.execute('SELECT * FROM categoria_piezas');
+    const [almacenRows] = await connection.execute('SELECT * FROM Almacen');
+
+    await connection.end();
+    res.json({
+      success: true,
+      categoria_piezas: categoriasRows,
+      almacen: almacenRows
+    });
+  } catch (error) {
+    console.error('Error al actualizar disponibilidad de pieza:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Inicializar la base de datos y tablas automáticamente si no existen
 const initDatabase = async () => {
   try {
@@ -120,10 +317,10 @@ const initDatabase = async () => {
     await connection.query(`
       CREATE TABLE IF NOT EXISTS \`Estado\` (
         \`ID_estado\` TINYINT(1) NOT NULL,
-        \`almacen\` TINYINT(1) NOT NULL DEFAULT 3,
-        \`banda\` TINYINT(1) NOT NULL DEFAULT 3,
-        \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 3,
-        \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 3,
+        \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
+        \`banda\` TINYINT(1) NOT NULL DEFAULT 1,
+        \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 1,
+        \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1,
         PRIMARY KEY (\`ID_estado\`)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
@@ -193,10 +390,10 @@ const initDatabase = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    // Insertar datos iniciales solo si las tablas están vacías
+    // Insertar datos iniciales solo si las tablas están vacías (por defecto Estado en 1)
     await connection.query(`
       INSERT IGNORE INTO \`Estado\` (\`ID_estado\`, \`almacen\`, \`banda\`, \`mitsubishi\`, \`lugar_entrega\`)
-      VALUES (1, 3, 3, 3, 3)
+      VALUES (1, 1, 1, 1, 1)
     `);
 
     await connection.query(`

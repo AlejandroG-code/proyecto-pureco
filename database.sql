@@ -10,10 +10,10 @@ USE `clickgo`;
 -- 0 = Apagado (Desenergizado), 1 = En Proceso, 2 = Terminado, 3 = En espera, 4 = Error
 CREATE TABLE IF NOT EXISTS `Estado` (
   `ID_estado` TINYINT(1) NOT NULL,
-  `almacen` TINYINT(1) NOT NULL DEFAULT 3,
-  `banda` TINYINT(1) NOT NULL DEFAULT 3,
-  `mitsubishi` TINYINT(1) NOT NULL DEFAULT 3,
-  `lugar_entrega` TINYINT(1) NOT NULL DEFAULT 3,
+  `almacen` TINYINT(1) NOT NULL DEFAULT 1,
+  `banda` TINYINT(1) NOT NULL DEFAULT 1,
+  `mitsubishi` TINYINT(1) NOT NULL DEFAULT 1,
+  `lugar_entrega` TINYINT(1) NOT NULL DEFAULT 1,
   PRIMARY KEY (`ID_estado`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -84,9 +84,9 @@ CREATE TABLE IF NOT EXISTS `pedido_historico` (
 -- DATOS INICIALES (SEED)
 -- ==========================================================
 
--- Línea única de Estado inicial (en espera = 3)
+-- Línea única de Estado inicial (por defecto todo en 1 = En Proceso)
 INSERT INTO `Estado` (`ID_estado`, `almacen`, `banda`, `mitsubishi`, `lugar_entrega`)
-VALUES (1, 3, 3, 3, 3)
+VALUES (1, 1, 1, 1, 1)
 ON DUPLICATE KEY UPDATE
   `almacen` = VALUES(`almacen`),
   `banda` = VALUES(`banda`),
