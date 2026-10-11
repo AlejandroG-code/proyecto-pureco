@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { requestOrder } from '../plcConnection'
+import { requestOrder, fetchDisponibilidad } from '../plcConnection'
 
 export default function PieceSelection() {
   const navigate = useNavigate()
@@ -10,6 +10,41 @@ export default function PieceSelection() {
   // Modal state
   const [showModal, setShowModal] = useState(false)
   const [pendingPiece, setPendingPiece] = useState(null)
+
+  // Disponibilidad desde la base de datos
+  const [availability, setAvailability] = useState({
+    categories: { 'Arte': true, 'Electrónica': true, 'Juguetes': true },
+    pieces: {
+      acuarela: true,
+      gises: true,
+      plumones: true,
+      computadora: true,
+      celular: true,
+      audifonos: true,
+      legos: true,
+      juegos_mesa: true,
+      rompecabezas: true
+    }
+  })
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadAvailability = async () => {
+      const data = await fetchDisponibilidad();
+      if (isMounted && data) {
+        setAvailability(data);
+      }
+    };
+    loadAvailability();
+    const interval = setInterval(loadAvailability, 2000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Estado para controlar qué menú desplegable está abierto
+  const [openCategory, setOpenCategory] = useState(null)
 
   const items = {
     'Arte': [
@@ -29,15 +64,20 @@ export default function PieceSelection() {
     ]
   };
 
-  const handleSelectChange = (e, category) => {
-    const value = e.target.value;
-    if (value === 'default') return;
-    
-    const piece = items[category].find(p => p.name === value);
-    if (piece) {
-      setPendingPiece(piece);
-      setShowModal(true);
-    }
+  const isCategoryAvailable = (category) => {
+    if (availability.categories[category] === false) return false;
+    return items[category].some(p => availability.pieces[p.id] !== false);
+  };
+
+  const isPieceAvailable = (pieceId) => {
+    return availability.pieces[pieceId] !== false;
+  };
+
+  const handlePieceSelect = (piece) => {
+    if (!isCategoryAvailable(piece.category) || !isPieceAvailable(piece.id)) return;
+    setPendingPiece(piece);
+    setOpenCategory(null);
+    setShowModal(true);
   };
 
   const confirmSelection = async () => {
@@ -60,11 +100,111 @@ export default function PieceSelection() {
     setPendingPiece(null);
   };
 
-  const getBoxColor = (category) => {
-    if (selectedPiece && items[category].find(p => p.id === selectedPiece)) {
-      return 'bg-[#004b93]'; 
+  const isCategorySelected = (category) => {
+    return (
+      openCategory === category ||
+      (selectedPiece && items[category].some(p => p.id === selectedPiece)) ||
+      (pendingPiece && pendingPiece.category === category)
+    );
+  };
+
+  const getBoxStyles = (category) => {
+    if (!isCategoryAvailable(category)) {
+      // Sin piezas en la BD: gris y sin cambio a azul en hover
+      return 'bg-gray-300/85 cursor-not-allowed opacity-80';
     }
-    return 'bg-[#c9e1fb]'; 
+    if (isCategorySelected(category)) {
+      // Seleccionado / desplegado: azul un poco más fuerte y menos opaco
+      return 'bg-[#4a90e2]/95 shadow-lg scale-[1.02]';
+    }
+    // Por defecto: azul opaco y claro; en hover: azul un poco más fuerte y menos opaco
+    return 'bg-[#a8d0fb]/60 hover:bg-[#4a90e2]/95 hover:shadow-lg cursor-pointer';
+  };
+
+  const getPieceOptionStyles = (piece) => {
+    const pieceOk = isPieceAvailable(piece.id);
+    const isSelected =
+      selectedPiece === piece.id || (pendingPiece && pendingPiece.id === piece.id);
+
+    if (!pieceOk) {
+      // Sin piezas en la BD: gris, deshabilitado y sin cambio a azul en hover
+      return 'bg-gray-300 text-gray-500 cursor-not-allowed';
+    }
+    if (isSelected) {
+      // Pieza seleccionada: azul más fuerte y menos opaco
+      return 'bg-[#4a90e2]/95 text-white font-bold';
+    }
+    // Pieza disponible: azul opaco y claro por defecto, azul más fuerte y menos opaco en hover
+    return 'bg-[#b8dafc]/70 text-[#004b93] hover:bg-[#4a90e2]/95 hover:text-white cursor-pointer';
+  };
+
+  const renderCategoryBox = (category, imgSrc, imgAlt) => {
+    const available = isCategoryAvailable(category);
+    const isOpen = openCategory === category && available;
+    const currentLabel =
+      pendingPiece && pendingPiece.category === category
+        ? pendingPiece.name
+        : available
+        ? category
+        : `${category} (Sin piezas)`;
+
+    return (
+      <div
+        key={category}
+        onClick={() => {
+          if (!available) return;
+          setOpenCategory(prev => (prev === category ? null : category));
+        }}
+        className={`flex flex-col items-center p-3 rounded-2xl transition-all duration-200 ${getBoxStyles(category)} shadow-md relative ${
+          isOpen ? 'z-40' : 'z-10'
+        }`}
+      >
+        <div className="w-28 h-28 flex items-center justify-center mb-3 relative">
+          <img
+            src={imgSrc}
+            alt={imgAlt}
+            className={`w-full h-full object-contain absolute z-0 drop-shadow-md transition-all ${
+              !available ? 'grayscale opacity-60' : ''
+            }`}
+          />
+        </div>
+
+        <button
+          type="button"
+          disabled={!available}
+          className={`text-xs font-bold px-2.5 py-1.5 rounded-md border text-center shadow-sm w-32 relative z-10 flex items-center justify-between transition-colors ${
+            !available
+              ? 'bg-gray-200 text-gray-500 border-gray-300 cursor-not-allowed'
+              : 'bg-white text-[#004b93] border-blue-200 cursor-pointer'
+          }`}
+        >
+          <span className="truncate flex-1 text-center">{currentLabel}</span>
+          <span className="ml-1 text-[10px]">{isOpen ? '▲' : '▼'}</span>
+        </button>
+
+        {isOpen && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-full mt-2 w-40 bg-white rounded-xl shadow-2xl border border-blue-200 p-1.5 z-50 flex flex-col gap-1"
+          >
+            {items[category].map(p => {
+              const pieceOk = isPieceAvailable(p.id);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  disabled={!pieceOk}
+                  onClick={() => handlePieceSelect(p)}
+                  className={`text-xs font-semibold px-2.5 py-2 rounded-lg text-center transition-all duration-150 ${getPieceOptionStyles(p)}`}
+                >
+                  {pieceOk ? p.name : `${p.name} (Agotado)`}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -72,56 +212,9 @@ export default function PieceSelection() {
       <h2 className="text-2xl font-bold text-[#004b93] mb-4 text-center">Elige tu pieza</h2>
       
       <div className="flex flex-wrap justify-center gap-6 mb-8 w-full max-w-sm">
-        {/* Arte */}
-        <div className={`flex flex-col items-center p-3 rounded-2xl transition-all ${getBoxColor('Arte')} shadow-md`}>
-          <div className={`w-28 h-28 flex items-center justify-center mb-3 relative`}>
-            <img src="/assets/box_arte.png" alt="Caja Arte" className="w-full h-full object-contain absolute z-0 drop-shadow-md" />
-          </div>
-          <select 
-            className="text-xs bg-white text-[#004b93] font-bold px-2 py-1.5 rounded-md border border-blue-200 text-center shadow-sm w-32 relative z-10"
-            onChange={(e) => handleSelectChange(e, 'Arte')}
-            value={pendingPiece && pendingPiece.category === 'Arte' ? pendingPiece.name : 'default'}
-          >
-            <option value="default" disabled hidden>Arte</option>
-            {items['Arte'].map(p => (
-              <option key={p.id} value={p.name}>{p.name}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Electrónica */}
-        <div className={`flex flex-col items-center p-3 rounded-2xl transition-all ${getBoxColor('Electrónica')} shadow-md`}>
-          <div className={`w-28 h-28 flex items-center justify-center mb-3 relative`}>
-            <img src="/assets/box_electronica.png" alt="Caja Electrónica" className="w-full h-full object-contain absolute z-0 drop-shadow-md" />
-          </div>
-          <select 
-            className="text-xs bg-white text-[#004b93] font-bold px-2 py-1.5 rounded-md border border-blue-200 text-center shadow-sm w-32 relative z-10"
-            onChange={(e) => handleSelectChange(e, 'Electrónica')}
-            value={pendingPiece && pendingPiece.category === 'Electrónica' ? pendingPiece.name : 'default'}
-          >
-            <option value="default" disabled hidden>Electrónica</option>
-            {items['Electrónica'].map(p => (
-              <option key={p.id} value={p.name}>{p.name}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Juguetes */}
-        <div className={`flex flex-col items-center p-3 rounded-2xl transition-all ${getBoxColor('Juguetes')} shadow-md`}>
-          <div className={`w-28 h-28 flex items-center justify-center mb-3 relative`}>
-            <img src="/assets/box_juguetes.png" alt="Caja Juguetes" className="w-full h-full object-contain absolute z-0 drop-shadow-md" />
-          </div>
-          <select 
-            className="text-xs bg-white text-[#004b93] font-bold px-2 py-1.5 rounded-md border border-blue-200 text-center shadow-sm w-32 relative z-10"
-            onChange={(e) => handleSelectChange(e, 'Juguetes')}
-            value={pendingPiece && pendingPiece.category === 'Juguetes' ? pendingPiece.name : 'default'}
-          >
-            <option value="default" disabled hidden>Juguetes</option>
-            {items['Juguetes'].map(p => (
-              <option key={p.id} value={p.name}>{p.name}</option>
-            ))}
-          </select>
-        </div>
+        {renderCategoryBox('Arte', '/assets/box_arte.png', 'Caja Arte')}
+        {renderCategoryBox('Electrónica', '/assets/box_electronica.png', 'Caja Electrónica')}
+        {renderCategoryBox('Juguetes', '/assets/box_juguetes.png', 'Caja Juguetes')}
       </div>
 
       <div className="h-12 w-full"></div>

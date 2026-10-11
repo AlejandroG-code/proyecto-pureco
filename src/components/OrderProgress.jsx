@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Check, Loader2, MoreHorizontal, X, Power } from 'lucide-react'
 import { fetchEstado } from '../plcConnection'
 
 const NODES = [
-  { id: 'almacen', label: 'Almacén', x: 25, y: 15, align: 'left', dbField: 'almacen' },
-  { id: 'banda', label: 'Banda', x: 75, y: 32, align: 'right', dbField: 'banda' },
-  { id: 'mitsubishi', label: 'Mitsubishi', x: 25, y: 49, align: 'left', dbField: 'mitsubishi' },
-  { id: 'rampa', label: 'Rampa', x: 75, y: 66, align: 'right', dbField: 'lugar_entrega' },
-  { id: 'fin', label: 'Fin', x: 25, y: 83, align: 'left', dbField: 'fin' }
+  { id: 'almacen', label: 'Almacén', x: 95, y: 50, dbField: 'almacen' },
+  { id: 'banda', label: 'Banda', x: 265, y: 138, dbField: 'banda' },
+  { id: 'mitsubishi', label: 'Mitsubishi', x: 95, y: 226, dbField: 'mitsubishi' },
+  { id: 'rampa', label: 'Rampa', x: 265, y: 314, dbField: 'lugar_entrega' },
+  { id: 'fin', label: 'Fin', x: 95, y: 402, dbField: 'fin' }
 ]
 
 export default function OrderProgress() {
@@ -17,13 +16,13 @@ export default function OrderProgress() {
   const piece = location.state?.piece
   
   const [dbState, setDbState] = useState({
-    almacen: 3,
+    almacen: 1,
     banda: 3,
     mitsubishi: 3,
     lugar_entrega: 3
   })
 
-  // Elevator music
+  // Música de elevador
   const audioRef = useRef(null)
 
   useEffect(() => {
@@ -32,12 +31,15 @@ export default function OrderProgress() {
       audioRef.current.play().catch(e => console.log('Audio autoplay prevented:', e));
     }
 
-    const interval = setInterval(async () => {
+    const loadEstado = async () => {
       const estado = await fetchEstado();
       if (estado) {
         setDbState(estado);
       }
-    }, 1000);
+    };
+
+    loadEstado();
+    const interval = setInterval(loadEstado, 1000);
 
     return () => clearInterval(interval);
   }, []);
@@ -46,128 +48,212 @@ export default function OrderProgress() {
     if (nodeId === 'fin') {
       return dbState.lugar_entrega === 2 ? 2 : 3;
     }
-    const field = NODES.find(n => n.id === nodeId).dbField;
-    return dbState[field] !== undefined ? dbState[field] : 3;
+    const field = NODES.find(n => n.id === nodeId)?.dbField;
+    return dbState[field] !== undefined ? Number(dbState[field]) : 3;
   };
 
   const renderIcon = (status) => {
-    switch(status) {
-      case 0: return <Power strokeWidth={5} size={32} />
-      case 1: return <Loader2 className="animate-spin" strokeWidth={4} size={32} />
-      case 2: return <Check strokeWidth={5} size={32} />
-      case 3: return <MoreHorizontal strokeWidth={5} size={32} />
-      case 4: return <X strokeWidth={5} size={32} />
-      default: return <MoreHorizontal strokeWidth={5} size={32} />
+    switch (status) {
+      case 0: // Apagado
+        return (
+          <img
+            src="/assets/icon_apagado.png"
+            alt="Apagado"
+            className="w-[50px] h-[50px] object-contain opacity-60 transition-all duration-500"
+          />
+        )
+      case 1: // En proceso
+        return (
+          <img
+            src="/assets/icon_proceso.png"
+            alt="En proceso"
+            className="w-[52px] h-[52px] object-contain animate-[spin_3s_linear_infinite] transition-all duration-500"
+          />
+        )
+      case 2: // Terminado
+        return (
+          <img
+            src="/assets/icon_terminado.png"
+            alt="Terminado"
+            className="w-[50px] h-[50px] object-contain drop-shadow-sm transition-all duration-500 scale-100"
+          />
+        )
+      case 3: // En espera
+        return (
+          <img
+            src="/assets/icon_espera.png"
+            alt="En espera"
+            className="w-[52px] h-[52px] object-contain animate-[pulse_2.5s_ease-in-out_infinite] transition-all duration-500"
+          />
+        )
+      case 4: // Error
+        return (
+          <img
+            src="/assets/icon_error.png"
+            alt="Error"
+            className="w-[50px] h-[50px] object-contain animate-pulse transition-all duration-500"
+          />
+        )
+      default:
+        return (
+          <img
+            src="/assets/icon_espera.png"
+            alt="En espera"
+            className="w-[52px] h-[52px] object-contain animate-[pulse_2.5s_ease-in-out_infinite]"
+          />
+        )
     }
   }
 
-  const getIconStyles = (status) => {
-    switch(status) {
-      case 0: return 'bg-gray-200 border-4 border-transparent text-gray-500' // Apagado
-      case 1: return 'bg-white border-[5px] border-[#004b93] text-[#004b93] scale-110 shadow-lg' // En proceso
-      case 2: return 'bg-[#9ac6fa] border-4 border-transparent text-[#004b93]' // Terminado
-      case 3: return 'bg-[#c9e1fb] border-4 border-transparent text-[#004b93]' // En espera
-      case 4: return 'bg-red-200 border-4 border-transparent text-red-600' // Error
-      default: return 'bg-[#c9e1fb] border-4 border-transparent text-[#004b93]'
+  const getCircleStyles = (status) => {
+    switch (status) {
+      case 0:
+        return 'bg-gray-300/90 opacity-75'
+      case 1:
+        return 'bg-[#a6d1ff] ring-4 ring-[#7ab8ff]/45 shadow-md scale-[1.04]'
+      case 2:
+        return 'bg-[#a6d1ff] shadow-sm'
+      case 3:
+        return 'bg-[#a6d1ff] shadow-sm'
+      case 4:
+        return 'bg-red-200 ring-4 ring-red-300/50 shadow-md'
+      default:
+        return 'bg-[#a6d1ff] shadow-sm'
     }
   }
 
-  const isFinished = dbState.lugar_entrega === 2; // Si rampa/entrega terminó, mostramos botón
+  const isFinished = getStatus('rampa') === 2;
+
+  const handleButtonClick = () => {
+    if (isFinished) {
+      if (audioRef.current) audioRef.current.pause();
+      navigate('/delivered', { state: { piece } });
+    } else {
+      // Si aún no termina en BD (modo prueba local), avanza suavemente de etapa
+      setDbState(prev => {
+        if (prev.almacen !== 2) return { ...prev, almacen: 2, banda: 1 };
+        if (prev.banda !== 2) return { ...prev, banda: 2, mitsubishi: 1 };
+        if (prev.mitsubishi !== 2) return { ...prev, mitsubishi: 2, lugar_entrega: 1 };
+        if (prev.lugar_entrega !== 2) return { ...prev, lugar_entrega: 2 };
+        return prev;
+      });
+    }
+  };
 
   return (
-    <div className="flex flex-col min-h-[650px] h-full w-full relative pb-32 pt-4">
+    <div className="flex flex-col items-center justify-between min-h-[calc(100vh-24px)] w-full max-w-sm mx-auto select-none">
       {/* Música de elevador local */}
       <audio ref={audioRef} loop src="/assets/videoplayback.webm" />
 
-      {/* SVG Path drawing with 90 degree angles */}
-      <div className="absolute inset-0 z-0 flex items-center justify-center">
-        <svg className="w-full h-full">
+      {/* Barra decorativa superior */}
+      <div className="w-full h-5 bg-[#b3d8ff] rounded-xl shrink-0" />
+
+      {/* Logo Click-Go alineado a la derecha como en la imagen */}
+      <div className="w-full flex justify-end pr-3 mt-1.5 z-20">
+        <img
+          src="/assets/logo_text.png"
+          alt="Click-Go"
+          className="h-9 object-contain drop-shadow-sm"
+        />
+      </div>
+
+      {/* Diagrama de progreso con ángulos de 90 grados */}
+      <div className="relative w-full max-w-[360px] h-[465px] mx-auto -mt-2 my-auto">
+        <svg
+          viewBox="0 0 360 465"
+          className="absolute inset-0 w-full h-full pointer-events-none z-0"
+        >
           {NODES.map((node, i) => {
-            if (i === NODES.length - 1) return null
-            const nextNode = NODES[i + 1]
-            
+            if (i === NODES.length - 1) return null;
+            const nextNode = NODES[i + 1];
             const nodeStatus = getStatus(node.id);
-            const isFilled = nodeStatus === 2;
-            const strokeColor = isFilled ? "#004b93" : "#002050"; 
-            const strokeWidth = "3";
-            
+            const nextStatus = getStatus(nextNode.id);
+            const isSegmentActive = nodeStatus === 1 || nextStatus === 1;
+            const isSegmentDone = nodeStatus === 2;
+
+            const points = `${node.x},${node.y} ${nextNode.x},${node.y} ${nextNode.x},${nextNode.y}`;
+
             return (
               <g key={`segment-${i}`}>
-                {/* Horizontal line from node to target x */}
-                <line 
-                  x1={`${node.x}%`} 
-                  y1={`${node.y}%`} 
-                  x2={`${nextNode.x}%`} 
-                  y2={`${node.y}%`}
-                  stroke={strokeColor} 
-                  strokeWidth={strokeWidth}
-                  className="transition-all duration-500 ease-in-out"
+                {/* Línea base azul marino */}
+                <polyline
+                  points={points}
+                  fill="none"
+                  stroke="#001871"
+                  strokeWidth="5.5"
+                  strokeLinecap="square"
+                  strokeLinejoin="miter"
+                  className="transition-all duration-700 ease-in-out"
+                  style={{ opacity: isSegmentDone || isSegmentActive ? 1 : 0.85 }}
                 />
-                {/* Vertical line from target x to target y */}
-                <line 
-                  x1={`${nextNode.x}%`} 
-                  y1={`${node.y}%`} 
-                  x2={`${nextNode.x}%`} 
-                  y2={`${nextNode.y}%`}
-                  stroke={strokeColor} 
-                  strokeWidth={strokeWidth}
-                  className="transition-all duration-500 ease-in-out"
-                />
+
+                {/* Efecto sutil de pulso en el tramo activo */}
+                {isSegmentActive && (
+                  <polyline
+                    points={points}
+                    fill="none"
+                    stroke="#4a90e2"
+                    strokeWidth="5.5"
+                    strokeLinecap="square"
+                    strokeLinejoin="miter"
+                    className="animate-pulse"
+                    style={{ opacity: 0.45 }}
+                  />
+                )}
               </g>
-            )
+            );
           })}
         </svg>
-      </div>
 
-      {/* Nodes */}
-      {NODES.map((node) => {
-        const status = getStatus(node.id);
+        {/* Nodos */}
+        {NODES.map((node) => {
+          const status = getStatus(node.id);
+          const leftPct = (node.x / 360) * 100;
+          const topPct = (node.y / 465) * 100;
 
-        return (
-          <div 
-            key={node.id} 
-            className="absolute transform -translate-x-1/2 -translate-y-1/2 z-10 flex flex-col items-center"
-            style={{ left: `${node.x}%`, top: `${node.y}%` }}
-          >
-            <div className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors duration-500 ${getIconStyles(status)}`}>
-              {renderIcon(status)}
+          return (
+            <div
+              key={node.id}
+              className="absolute transform -translate-x-1/2 -translate-y-1/2 z-10 flex flex-col items-center"
+              style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+            >
+              {/* Círculo del nodo */}
+              <div
+                className={`w-[76px] h-[76px] rounded-full flex items-center justify-center transition-all duration-500 ease-out ${getCircleStyles(status)}`}
+              >
+                {renderIcon(status)}
+              </div>
+
+              {/* Etiqueta debajo del círculo */}
+              <span
+                className={`position-label absolute top-[80px] whitespace-nowrap font-extrabold text-[19px] tracking-tight text-[#003b75] transition-all duration-300 ${
+                  status === 1 ? 'scale-105' : ''
+                }`}
+              >
+                {node.label}
+              </span>
             </div>
-            <span className="font-extrabold mt-2 text-sm px-3 py-0.5 rounded-full text-[#004b93] bg-[#e6f0fa] drop-shadow-sm">
-              {node.label}
-            </span>
-          </div>
-        )
-      })}
-
-      <div className="absolute bottom-16 left-0 w-full flex justify-center z-20 px-4">
-        {isFinished ? (
-          <button 
-            onClick={() => {
-              if (audioRef.current) audioRef.current.pause();
-              navigate('/delivered', { state: { piece } })
-            }}
-            className="bg-[#004b93] text-white font-bold py-3.5 px-8 rounded-full shadow-lg hover:bg-blue-800 w-11/12 text-lg transition-transform active:scale-95 flex items-center justify-center gap-2"
-          >
-            Ver el pedido
-          </button>
-        ) : (
-          <button 
-            onClick={() => {
-              // Simulador de avance rápido para demostración local si la BD no cambia
-              setDbState(prev => {
-                if (prev.almacen !== 2) return {...prev, almacen: 2, banda: 1}
-                if (prev.banda !== 2) return {...prev, banda: 2, mitsubishi: 1}
-                if (prev.mitsubishi !== 2) return {...prev, mitsubishi: 2, lugar_entrega: 1}
-                if (prev.lugar_entrega !== 2) return {...prev, lugar_entrega: 2}
-                return prev
-              })
-            }}
-            className="bg-[#004b93]/10 text-[#004b93] font-bold py-2 px-8 rounded-full hover:bg-[#004b93]/20 transition-transform active:scale-95 opacity-50 text-xs mt-10"
-          >
-            Avanzar (Debug)
-          </button>
-        )}
+          );
+        })}
       </div>
+
+      {/* Botón inferior "Ver el pedido" */}
+      <div className="w-full flex justify-center px-2 mt-2">
+        <button
+          onClick={handleButtonClick}
+          className={`bg-[#003b75] text-[#a6d1ff] font-extrabold py-3.5 px-8 rounded-full shadow-md w-full text-xl tracking-wide transition-all duration-300 active:scale-95 ${
+            isFinished
+              ? 'hover:bg-[#004b93] hover:text-white hover:shadow-lg animate-[pulse_2s_ease-in-out_infinite]'
+              : 'hover:bg-[#004b93]'
+          }`}
+        >
+          Ver el pedido
+        </button>
+      </div>
+
+      {/* Barra decorativa inferior */}
+      <div className="w-full h-5 bg-[#b3d8ff] rounded-xl mt-3 shrink-0" />
     </div>
   )
 }
+
