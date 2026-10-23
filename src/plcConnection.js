@@ -1,13 +1,38 @@
-// Conexión al servidor local Express
-const API_URL = 'http://localhost:3001/api';
+// Conexión al servidor local Express (soporta middleware en Vite /api y puerto directo 3001)
+const API_URL = '/api';
+const FALLBACK_API_URL = 'http://localhost:3001/api';
+
+const apiFetch = async (endpoint, options = {}) => {
+  try {
+    const res = await fetch(`${API_URL}${endpoint}`, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return res;
+    }
+  } catch {
+    // Intentar fallback en puerto 3001
+  }
+  return fetch(`${FALLBACK_API_URL}${endpoint}`, options);
+};
+
+export const checkBackendHealth = async () => {
+  try {
+    const res = await apiFetch('/health', { signal: AbortSignal.timeout ? AbortSignal.timeout(2500) : undefined });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.success);
+  } catch {
+    return false;
+  }
+};
 
 export const fetchUltimoPedido = async () => {
   try {
-    const res = await fetch(`${API_URL}/pedido/ultimo`);
+    const res = await apiFetch('/pedido/ultimo');
+    if (!res.ok) return null;
     const data = await res.json();
     return data.pedido; // null si no hay
-  } catch (error) {
-    console.error('Error pedido', error);
+  } catch {
     return null;
   }
 };
@@ -19,7 +44,7 @@ export const requestOrder = async (pieceId, category, quantity) => {
     if (category === 'Arte') id_categoria = 2;
     if (category === 'Juguetes') id_categoria = 3;
 
-    const res = await fetch(`${API_URL}/pedidos`, {
+    const res = await apiFetch('/pedidos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id_categoria })
@@ -35,18 +60,18 @@ export const requestOrder = async (pieceId, category, quantity) => {
 
 export const fetchEstado = async () => {
   try {
-    const res = await fetch(`${API_URL}/estado`);
+    const res = await apiFetch('/estado');
+    if (!res.ok) return null;
     const data = await res.json();
     return data.estado;
-  } catch (error) {
-    console.error('Error estado', error);
+  } catch {
     return null;
   }
 };
 
 export const updateEstado = async (nuevoEstado) => {
   try {
-    const res = await fetch(`${API_URL}/estado`, {
+    const res = await apiFetch('/estado', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(nuevoEstado)
@@ -61,7 +86,7 @@ export const updateEstado = async (nuevoEstado) => {
 
 export const cancelOrderByError = async (estacion) => {
   try {
-    await fetch(`${API_URL}/pedido/error`, {
+    await apiFetch('/pedido/error', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ estacion })
@@ -139,7 +164,8 @@ export const fetchDisponibilidad = async () => {
   };
 
   try {
-    const res = await fetch(`${API_URL}/piezas`);
+    const res = await apiFetch('/piezas');
+    if (!res.ok) return defaultAvailability;
     const data = await res.json();
     if (!data.success) return defaultAvailability;
 
@@ -195,15 +221,14 @@ export const fetchDisponibilidad = async () => {
     }
 
     return { categories, pieces };
-  } catch (error) {
-    console.error('Error obteniendo disponibilidad de piezas:', error);
+  } catch {
     return defaultAvailability;
   }
 };
 
 export const updateDisponibilidadPieza = async ({ id_almacen, id_categoria, disponible }) => {
   try {
-    const res = await fetch(`${API_URL}/piezas/disponibilidad`, {
+    const res = await apiFetch('/piezas/disponibilidad', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id_almacen, id_categoria, disponible })

@@ -6,33 +6,57 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configuracion de base de datos XAMPP por defecto
+// Evitar caídas por excepciones no capturadas o promesas rechazadas
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+// Configuración con 127.0.0.1 para evitar conflictos IPv6 (::1) con XAMPP en Windows
 const dbConfig = {
-  host: 'localhost',
+  host: '127.0.0.1',
   user: 'root',
   password: '',
-  database: 'clickgo' // asumiendo el nombre de bd, se puede cambiar luego
+  database: 'clickgo',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 };
+
+// Pool de conexiones permanente y resistente a caídas temporales
+const pool = mysql.createPool(dbConfig);
+
+// Endpoint de verificación de salud del backend y la base de datos
+app.get('/api/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ success: true, status: 'ok', db: 'connected' });
+  } catch (error) {
+    res.status(500).json({ success: false, status: 'error', db: error.message });
+  }
+});
 
 // 1. Crear un pedido y reiniciar todo el Estado a 1
 app.post('/api/pedidos', async (req, res) => {
   const { id_categoria } = req.body;
   try {
-    const connection = await mysql.createConnection(dbConfig);
-
     // Cerrar cualquier pedido anterior que hubiera quedado en espera
-    await connection.execute(
+    await pool.execute(
       'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
     );
 
     // Insertar nuevo pedido en espera
-    const [result] = await connection.execute(
+    const [result] = await pool.execute(
       'INSERT INTO pedido_historico (ID_categoria, fecha_hora, en_espera) VALUES (?, NOW(), 1)',
       [id_categoria]
     );
 
     // Reiniciar el estado de todas las estaciones a 1 cada vez que se hace un pedido nuevo
-    await connection.execute(
+    await pool.execute(
       `INSERT INTO Estado (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
        VALUES (1, 1, 1, 1, 1)
        ON DUPLICATE KEY UPDATE
@@ -42,11 +66,10 @@ app.post('/api/pedidos', async (req, res) => {
          lugar_entrega = 1`
     );
 
-    await connection.execute(
+    await pool.execute(
       'INSERT INTO estado_historico (ID_estado, fecha_hora) VALUES (1, NOW())'
     );
 
-    await connection.end();
     res.json({ success: true, id_pedido: result.insertId });
   } catch (error) {
     console.error('Error al crear pedido:', error);
@@ -57,8 +80,7 @@ app.post('/api/pedidos', async (req, res) => {
 // 2. Obtener estado del pedido actual (para la vista de progreso y el heartbeat cada 2s)
 app.get('/api/estado', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [rows] = await connection.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
+    const [rows] = await pool.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
     if (rows.length > 0) {
       const est = rows[0];
       const allDone =
@@ -71,15 +93,13 @@ app.get('/api/estado', async (req, res) => {
       );
 
       if (allDone || hasError) {
-        await connection.execute(
+        await pool.execute(
           'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
         );
       }
 
-      await connection.end();
       res.json({ success: true, estado: est });
     } else {
-      await connection.end();
       res.json({ success: true, estado: null });
     }
   } catch (error) {
@@ -92,15 +112,18 @@ app.get('/api/estado', async (req, res) => {
 app.put('/api/estado', async (req, res) => {
   const { almacen, banda, mitsubishi, lugar_entrega } = req.body;
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    // Si viene solo un campo o varios, mantenemos los valores previos para los no especificados
+    const [currentRows] = await pool.execute('SELECT * FROM Estado WHERE ID_estado = 1');
+    const current = currentRows[0] || { almacen: 1, banda: 1, mitsubishi: 1, lugar_entrega: 1 };
+
     const vals = {
-      almacen: Number(almacen ?? 1),
-      banda: Number(banda ?? 1),
-      mitsubishi: Number(mitsubishi ?? 1),
-      lugar_entrega: Number(lugar_entrega ?? 1)
+      almacen: almacen !== undefined ? Number(almacen) : Number(current.almacen ?? 1),
+      banda: banda !== undefined ? Number(banda) : Number(current.banda ?? 1),
+      mitsubishi: mitsubishi !== undefined ? Number(mitsubishi) : Number(current.mitsubishi ?? 1),
+      lugar_entrega: lugar_entrega !== undefined ? Number(lugar_entrega) : Number(current.lugar_entrega ?? 1)
     };
 
-    await connection.execute(
+    await pool.execute(
       `INSERT INTO Estado (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
        VALUES (1, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
@@ -112,7 +135,7 @@ app.put('/api/estado', async (req, res) => {
     );
 
     // Registrar cambio en estado_historico
-    await connection.execute(
+    await pool.execute(
       'INSERT INTO estado_historico (ID_estado, fecha_hora) VALUES (1, NOW())'
     );
 
@@ -123,11 +146,11 @@ app.put('/api/estado', async (req, res) => {
 
     if (errorStations.length > 0) {
       const desc = `Error en estación (${errorStations.join(', ')}) - Pedido cancelado`;
-      await connection.execute(
+      await pool.execute(
         'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
         [desc]
       );
-      await connection.execute(
+      await pool.execute(
         'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
       );
     }
@@ -139,13 +162,12 @@ app.put('/api/estado', async (req, res) => {
       vals.mitsubishi === 2 &&
       vals.lugar_entrega === 2
     ) {
-      await connection.execute(
+      await pool.execute(
         'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
       );
     }
 
-    const [rows] = await connection.execute('SELECT * FROM Estado WHERE ID_estado = 1');
-    await connection.end();
+    const [rows] = await pool.execute('SELECT * FROM Estado WHERE ID_estado = 1');
     res.json({ success: true, estado: rows[0] });
   } catch (error) {
     console.error('Error al actualizar estado:', error);
@@ -157,25 +179,23 @@ app.put('/api/estado', async (req, res) => {
 app.post('/api/pedido/error', async (req, res) => {
   const { estacion } = req.body;
   try {
-    const connection = await mysql.createConnection(dbConfig);
     const desc = `Error detectado en ${estacion || 'proceso'} - Pedido cancelado`;
 
     // Verificar si ya se canceló el pedido actual para no duplicar alarmas si ya lo hizo PUT /api/estado
-    const [pedidosActivos] = await connection.execute(
+    const [pedidosActivos] = await pool.execute(
       'SELECT ID_pedido FROM pedido_historico WHERE en_espera = 1 LIMIT 1'
     );
 
     if (pedidosActivos.length > 0) {
-      await connection.execute(
+      await pool.execute(
         'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
         [desc]
       );
-      await connection.execute(
+      await pool.execute(
         'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
       );
     }
 
-    await connection.end();
     res.json({ success: true });
   } catch (error) {
     console.error('Error al cancelar pedido por error:', error);
@@ -186,10 +206,8 @@ app.post('/api/pedido/error', async (req, res) => {
 // 3. Obtener estado de en_espera del ultimo pedido (para rechazo)
 app.get('/api/pedido/ultimo', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-
     // Si en la tabla Estado el pedido anterior ya terminó (todo en 2) o tuvo error (4), liberar en_espera antes de consultar
-    const [estRows] = await connection.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
+    const [estRows] = await pool.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
     if (estRows.length > 0) {
       const est = estRows[0];
       const allDone =
@@ -201,12 +219,11 @@ app.get('/api/pedido/ultimo', async (req, res) => {
         v => Number(v) === 4
       );
       if (allDone || hasError) {
-        await connection.execute('UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1');
+        await pool.execute('UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1');
       }
     }
 
-    const [rows] = await connection.execute('SELECT * FROM pedido_historico ORDER BY ID_pedido DESC LIMIT 1');
-    await connection.end();
+    const [rows] = await pool.execute('SELECT * FROM pedido_historico ORDER BY ID_pedido DESC LIMIT 1');
     if (rows.length > 0) {
       res.json({ success: true, pedido: rows[0] });
     } else {
@@ -221,8 +238,7 @@ app.get('/api/pedido/ultimo', async (req, res) => {
 // 4. Obtener disponibilidad de piezas desde categoría_piezas y Almacén
 app.get('/api/piezas', async (req, res) => {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [tablesResult] = await connection.execute('SHOW TABLES');
+    const [tablesResult] = await pool.execute('SHOW TABLES');
     const tableNames = tablesResult.map(row => Object.values(row)[0]);
 
     const findTable = (candidates) =>
@@ -235,16 +251,15 @@ app.get('/api/piezas', async (req, res) => {
     let almacenRows = [];
 
     if (catTable) {
-      const [rows] = await connection.execute(`SELECT * FROM \`${catTable}\``);
+      const [rows] = await pool.execute(`SELECT * FROM \`${catTable}\``);
       categoriasRows = rows;
     }
 
     if (almTable) {
-      const [rows] = await connection.execute(`SELECT * FROM \`${almTable}\``);
+      const [rows] = await pool.execute(`SELECT * FROM \`${almTable}\``);
       almacenRows = rows;
     }
 
-    await connection.end();
     res.json({
       success: true,
       categoria_piezas: categoriasRows,
@@ -260,23 +275,22 @@ app.get('/api/piezas', async (req, res) => {
 app.put('/api/piezas/disponibilidad', async (req, res) => {
   const { id_almacen, id_categoria, disponible } = req.body;
   try {
-    const connection = await mysql.createConnection(dbConfig);
     const dispVal = Number(disponible) ? 1 : 0;
 
     if (id_almacen !== undefined && id_almacen !== null) {
-      await connection.execute(
+      await pool.execute(
         'UPDATE Almacen SET disponible = ? WHERE ID_almacen = ?',
         [dispVal, Number(id_almacen)]
       );
     } else if (id_categoria !== undefined && id_categoria !== null) {
-      await connection.execute(
+      await pool.execute(
         'UPDATE Almacen SET disponible = ? WHERE ID_categoria = ?',
         [dispVal, Number(id_categoria)]
       );
     }
 
     // Recalcular y sincronizar la columna cantidad en categoria_piezas según las piezas disponibles en Almacen
-    await connection.execute(`
+    await pool.execute(`
       UPDATE categoria_piezas c
       SET c.cantidad = (
         SELECT COUNT(*)
@@ -285,10 +299,9 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
       )
     `);
 
-    const [categoriasRows] = await connection.execute('SELECT * FROM categoria_piezas');
-    const [almacenRows] = await connection.execute('SELECT * FROM Almacen');
+    const [categoriasRows] = await pool.execute('SELECT * FROM categoria_piezas');
+    const [almacenRows] = await pool.execute('SELECT * FROM Almacen');
 
-    await connection.end();
     res.json({
       success: true,
       categoria_piezas: categoriasRows,
@@ -303,18 +316,18 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
 // Inicializar la base de datos y tablas automáticamente si no existen
 const initDatabase = async () => {
   try {
-    const connection = await mysql.createConnection({
+    const tempConn = await mysql.createConnection({
       host: dbConfig.host,
       user: dbConfig.user,
       password: dbConfig.password
     });
 
-    await connection.query(
+    await tempConn.query(
       `CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`
     );
-    await connection.query(`USE \`${dbConfig.database}\``);
+    await tempConn.end();
 
-    await connection.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS \`Estado\` (
         \`ID_estado\` TINYINT(1) NOT NULL,
         \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
@@ -325,7 +338,7 @@ const initDatabase = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    await connection.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS \`estado_historico\` (
         \`ID_estado_historico\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
         \`ID_estado\` TINYINT(1) NOT NULL,
@@ -337,7 +350,7 @@ const initDatabase = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    await connection.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS \`alarmas\` (
         \`ID_alarmas\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
         \`ID_estado\` TINYINT(1) NOT NULL,
@@ -350,7 +363,7 @@ const initDatabase = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    await connection.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
         \`ID_categoria\` TINYINT(1) NOT NULL,
         \`nombre_categoria\` VARCHAR(15) NOT NULL,
@@ -359,7 +372,7 @@ const initDatabase = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    await connection.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS \`Almacen\` (
         \`ID_almacen\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
         \`ID_estado_historico\` MEDIUMINT(6) DEFAULT NULL,
@@ -377,7 +390,7 @@ const initDatabase = async () => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
 
-    await connection.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
         \`ID_pedido\` SMALLINT(3) NOT NULL AUTO_INCREMENT,
         \`ID_categoria\` TINYINT(1) NOT NULL,
@@ -391,24 +404,24 @@ const initDatabase = async () => {
     `);
 
     // Insertar datos iniciales solo si las tablas están vacías (por defecto Estado en 1)
-    await connection.query(`
+    await pool.query(`
       INSERT IGNORE INTO \`Estado\` (\`ID_estado\`, \`almacen\`, \`banda\`, \`mitsubishi\`, \`lugar_entrega\`)
       VALUES (1, 1, 1, 1, 1)
     `);
 
-    await connection.query(`
+    await pool.query(`
       INSERT IGNORE INTO \`categoria_piezas\` (\`ID_categoria\`, \`nombre_categoria\`, \`cantidad\`) VALUES
         (1, 'Electrónica', 3),
         (2, 'Arte', 3),
         (3, 'Juguetes', 3)
     `);
 
-    await connection.query(`
+    await pool.query(`
       INSERT IGNORE INTO \`estado_historico\` (\`ID_estado_historico\`, \`ID_estado\`)
       VALUES (1, 1)
     `);
 
-    await connection.query(`
+    await pool.query(`
       INSERT IGNORE INTO \`Almacen\` (\`ID_almacen\`, \`ID_estado_historico\`, \`ID_categoria\`, \`horizontal\`, \`vertical\`, \`disponible\`) VALUES
         (1, 1, 1, 1, 1, 1),
         (2, 1, 1, 1, 2, 1),
@@ -421,7 +434,6 @@ const initDatabase = async () => {
         (9, 1, 3, 3, 3, 1)
     `);
 
-    await connection.end();
     console.log('Base de datos clickgo verificada/inicializada correctamente.');
   } catch (error) {
     console.warn('No se pudo inicializar automáticamente la BD (verifica que MySQL en XAMPP esté activo):', error.message);
@@ -429,10 +441,19 @@ const initDatabase = async () => {
 };
 
 const PORT = 3001;
-app.listen(PORT, () => {
-  console.log(`Servidor escuchando en puerto ${PORT}`);
+const server = app.listen(PORT, () => {
+  console.log(`Servidor Click-Go escuchando en puerto ${PORT}`);
   initDatabase();
 });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    // El puerto 3001 ya está en uso por otra instancia; igual inicializamos/verificamos BD
+    initDatabase();
+  } else {
+    console.error('Error en servidor:', err);
+  }
+});
 
+export { app, initDatabase };
 

@@ -1,12 +1,22 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { app as apiApp } from './server.js'
 
 export default defineConfig({
   plugins: [
+    {
+      name: 'click-go-express-api',
+      configureServer(server) {
+        server.middlewares.use(apiApp)
+      }
+    },
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: {
+        inlineWorkboxRuntime: true
+      },
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
       manifest: {
         name: 'Click-Go',
@@ -29,3 +39,4 @@ export default defineConfig({
     })
   ]
 })
+
