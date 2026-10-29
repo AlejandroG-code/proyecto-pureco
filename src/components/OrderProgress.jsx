@@ -23,11 +23,12 @@ export default function OrderProgress() {
     lugar_entrega: 1
   })
 
-  // Control de inactividad (popup tras 30s de inactividad)
+  // Inactividad de proceso: popup tras 30 segundos sin ningún avance en las estaciones
   const [showInactivityModal, setShowInactivityModal] = useState(false)
   const [countdown, setCountdown] = useState(15)
   const inactivityTimerRef = useRef(null)
   const countdownIntervalRef = useRef(null)
+  const lastProgressStateRef = useRef(null)
 
   // Música de elevador
   const audioRef = useRef(null)
@@ -52,6 +53,22 @@ export default function OrderProgress() {
       };
 
       setDbState(nextState);
+
+      // Comprobar si hubo algún avance en las estaciones del proceso
+      const prevState = lastProgressStateRef.current;
+      const hasProgressed = prevState === null ||
+        prevState.almacen !== nextState.almacen ||
+        prevState.banda !== nextState.banda ||
+        prevState.mitsubishi !== nextState.mitsubishi ||
+        prevState.lugar_entrega !== nextState.lugar_entrega;
+
+      if (hasProgressed) {
+        lastProgressStateRef.current = nextState;
+        // Si las estaciones avanzaron, reiniciamos los 30s de inactividad de proceso
+        setShowInactivityModal(false);
+        if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+        resetInactivityTimer();
+      }
 
       // Si alguna estación entra en estado 4 (Error), cancelar pedido, guardar error en BD y mostrar pantalla de rechazo/error
       const errorEntry = Object.entries(nextState).find(([, val]) => val === 4);
@@ -226,25 +243,14 @@ export default function OrderProgress() {
     };
   }, [showInactivityModal]);
 
-  // Listener global de actividad del usuario
+  // Si el proceso finaliza exitosamente, desactivar temporizadores
   useEffect(() => {
-    if (isFinished) return;
-
-    resetInactivityTimer();
-
-    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
-    const onActivity = () => {
-      resetInactivityTimer();
-    };
-
-    events.forEach(evt => window.addEventListener(evt, onActivity));
-
-    return () => {
+    if (isFinished) {
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-      events.forEach(evt => window.removeEventListener(evt, onActivity));
-    };
-  }, [isFinished, showInactivityModal]);
+      setShowInactivityModal(false);
+    }
+  }, [isFinished]);
 
   const handleButtonClick = () => {
     if (!isFinished) return;
@@ -372,13 +378,13 @@ export default function OrderProgress() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-white rounded-[32px] p-6 max-w-xs w-full shadow-2xl flex flex-col items-center text-center border-4 border-[#b3d8ff]">
             <div className="w-16 h-16 rounded-full bg-[#d8ecff] flex items-center justify-center text-3xl mb-3 shadow-inner">
-              ⏱️
+              ⏳
             </div>
             <h3 className="text-2xl font-black text-[#003b75] mb-2 tracking-tight">
               ¿Sigues aquí?
             </h3>
             <p className="text-sm font-bold text-[#003b75]/80 mb-3 leading-relaxed">
-              No hemos detectado actividad en 30 segundos. Tu pedido se cancelará automáticamente en:
+              No se ha detectado ningún avance en el proceso en los últimos 30 segundos. ¿Deseas seguir esperando?
             </p>
             <div className="text-3xl font-black text-amber-500 mb-5 font-mono bg-amber-50 px-5 py-1.5 rounded-full border border-amber-200">
               {countdown}s
@@ -389,7 +395,7 @@ export default function OrderProgress() {
                 onClick={handleStay}
                 className="w-full bg-[#003b75] text-[#a6d1ff] hover:text-white font-extrabold py-3.5 px-6 rounded-full shadow-md hover:bg-[#004b93] active:scale-95 transition-all text-base tracking-wide"
               >
-                ¡Sí, aquí sigo!
+                ¡Sí, seguir esperando!
               </button>
               <button
                 onClick={handleCancelDueToInactivity}
