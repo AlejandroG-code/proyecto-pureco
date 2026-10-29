@@ -335,7 +335,8 @@ const initDatabase = async () => {
       host: dbConfig.host,
       port: dbConfig.port,
       user: dbConfig.user,
-      password: dbConfig.password
+      password: dbConfig.password,
+      ssl: dbConfig.ssl
     });
 
     await tempConn.query(
