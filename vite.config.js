@@ -1,16 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import { app as apiApp } from './server.js'
 
-export default defineConfig({
-  plugins: [
-    {
-      name: 'click-go-express-api',
-      configureServer(server) {
-        server.middlewares.use(apiApp)
-      }
-    },
+export default defineConfig(({ command }) => {
+  const plugins = [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -38,5 +31,18 @@ export default defineConfig({
       }
     })
   ]
+
+  if (command === 'serve') {
+    plugins.unshift({
+      name: 'click-go-express-api',
+      async configureServer(server) {
+        const { app: apiApp } = await import('./server.js')
+        server.middlewares.use(apiApp)
+      }
+    })
+  }
+
+  return { plugins }
 })
+
 

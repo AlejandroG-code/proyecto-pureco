@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import mysql from 'mysql2/promise';
 import cors from 'cors';
@@ -14,29 +15,41 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
 });
 
-// Configuración con 127.0.0.1 para evitar conflictos IPv6 (::1) con XAMPP en Windows
+// Configuración de base de datos con soporte para variables de entorno (locales o Railway)
 const dbConfig = {
-  host: '127.0.0.1',
-  user: 'root',
-  password: '',
-  database: 'clickgo',
+  host: process.env.DB_HOST || process.env.MYSQLHOST || '127.0.0.1',
+  port: Number(process.env.DB_PORT || process.env.MYSQLPORT) || 3306,
+  user: process.env.DB_USER || process.env.MYSQLUSER || 'root',
+  password: process.env.DB_PASSWORD !== undefined 
+    ? process.env.DB_PASSWORD 
+    : (process.env.MYSQLPASSWORD !== undefined ? process.env.MYSQLPASSWORD : ''),
+  database: process.env.DB_NAME || process.env.MYSQLDATABASE || 'clickgo',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
   enableKeepAlive: true,
-  keepAliveInitialDelay: 0
+  keepAliveInitialDelay: 0,
+  ssl: (process.env.DB_SSL === 'true' || process.env.MYSQL_SSL === 'true')
+    ? { rejectUnauthorized: false }
+    : undefined
 };
 
 // Pool de conexiones permanente y resistente a caídas temporales
 const pool = mysql.createPool(dbConfig);
 
+let dbInitialized = false;
+let isInitializing = false;
+
 // Endpoint de verificación de salud del backend y la base de datos
 app.get('/api/health', async (req, res) => {
   try {
+    if (!dbInitialized && !isInitializing) {
+      await initDatabase();
+    }
     await pool.query('SELECT 1');
     res.json({ success: true, status: 'ok', db: 'connected' });
   } catch (error) {
-    res.status(500).json({ success: false, status: 'error', db: error.message });
+    res.json({ success: false, status: 'error', db: error.message });
   }
 });
 
@@ -315,9 +328,12 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
 
 // Inicializar la base de datos y tablas automáticamente si no existen
 const initDatabase = async () => {
+  if (isInitializing) return;
+  isInitializing = true;
   try {
     const tempConn = await mysql.createConnection({
       host: dbConfig.host,
+      port: dbConfig.port,
       user: dbConfig.user,
       password: dbConfig.password
     });
@@ -434,13 +450,17 @@ const initDatabase = async () => {
         (9, 1, 3, 3, 3, 1)
     `);
 
+    dbInitialized = true;
     console.log('Base de datos clickgo verificada/inicializada correctamente.');
   } catch (error) {
-    console.warn('No se pudo inicializar automáticamente la BD (verifica que MySQL en XAMPP esté activo):', error.message);
+    dbInitialized = false;
+    console.warn('No se pudo inicializar automáticamente la BD (verifica que MariaDB/MySQL esté activo y configurado):', error.message);
+  } finally {
+    isInitializing = false;
   }
 };
 
-const PORT = 3001;
+const PORT = Number(process.env.PORT) || 3001;
 const server = app.listen(PORT, () => {
   console.log(`Servidor Click-Go escuchando en puerto ${PORT}`);
   initDatabase();
@@ -448,7 +468,8 @@ const server = app.listen(PORT, () => {
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    // El puerto 3001 ya está en uso por otra instancia; igual inicializamos/verificamos BD
+    // El puerto ya está en uso por otra instancia; igual inicializamos/verificamos BD
+    console.warn(`Puerto ${PORT} en uso, verificando conexión a BD...`);
     initDatabase();
   } else {
     console.error('Error en servidor:', err);

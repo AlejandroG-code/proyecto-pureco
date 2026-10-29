@@ -1,6 +1,7 @@
-// Conexión al servidor local Express (soporta middleware en Vite /api y puerto directo 3001)
-const API_URL = '/api';
-const FALLBACK_API_URL = 'http://localhost:3001/api';
+// Conexión al servidor Express (soporta VITE_API_URL en producción, middleware en Vite /api y puerto directo 3001)
+const rawBase = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+const API_URL = rawBase ? (rawBase.endsWith('/api') ? rawBase : `${rawBase}/api`) : '/api';
+const FALLBACK_API_URL = rawBase ? API_URL : 'http://localhost:3001/api';
 
 const apiFetch = async (endpoint, options = {}) => {
   try {
