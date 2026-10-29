@@ -216,6 +216,24 @@ app.post('/api/pedido/error', async (req, res) => {
   }
 });
 
+// 2d. Cancelar pedido por inactividad
+app.post('/api/pedido/cancelar', async (req, res) => {
+  const { motivo = 'Cancelado por inactividad' } = req.body || {};
+  try {
+    await pool.execute(
+      'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+    );
+    await pool.execute(
+      'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
+      [motivo]
+    );
+    res.json({ success: true, message: 'Pedido cancelado correctamente' });
+  } catch (error) {
+    console.error('Error al cancelar pedido por inactividad:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 3. Obtener estado de en_espera del ultimo pedido (para rechazo)
 app.get('/api/pedido/ultimo', async (req, res) => {
   try {
@@ -409,7 +427,7 @@ const initDatabase = async () => {
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
-        \`ID_pedido\` SMALLINT(3) NOT NULL AUTO_INCREMENT,
+        \`ID_pedido\` INT NOT NULL AUTO_INCREMENT,
         \`ID_categoria\` TINYINT(1) NOT NULL,
         \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         \`en_espera\` TINYINT(1) NOT NULL DEFAULT 1,

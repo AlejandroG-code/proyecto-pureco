@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS `Almacen` (
 -- 6. Tabla: pedido_historico
 -- en_espera: 1 = esperando, 0 = ya pasó
 CREATE TABLE IF NOT EXISTS `pedido_historico` (
-  `ID_pedido` SMALLINT(3) NOT NULL AUTO_INCREMENT,
+  `ID_pedido` INT NOT NULL AUTO_INCREMENT,
   `ID_categoria` TINYINT(1) NOT NULL,
   `fecha_hora` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `en_espera` TINYINT(1) NOT NULL DEFAULT 1,

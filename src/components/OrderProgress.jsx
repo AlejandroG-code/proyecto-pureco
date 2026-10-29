@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { fetchEstado, cancelOrderByError } from '../plcConnection'
+import { fetchEstado, cancelOrderByError, cancelOrderDueToInactivity } from '../plcConnection'
 
 const NODES = [
   { id: 'almacen', label: 'Almacén', x: 95, y: 50, dbField: 'almacen' },
@@ -22,6 +22,12 @@ export default function OrderProgress() {
     mitsubishi: 1,
     lugar_entrega: 1
   })
+
+  // Control de inactividad (popup tras 30s de inactividad)
+  const [showInactivityModal, setShowInactivityModal] = useState(false)
+  const [countdown, setCountdown] = useState(15)
+  const inactivityTimerRef = useRef(null)
+  const countdownIntervalRef = useRef(null)
 
   // Música de elevador
   const audioRef = useRef(null)
@@ -173,6 +179,73 @@ export default function OrderProgress() {
 
   const isFinished = getStatus('fin') === 2;
 
+  const handleCancelDueToInactivity = async () => {
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (audioRef.current) audioRef.current.pause();
+    await cancelOrderDueToInactivity();
+    navigate('/confirmation', {
+      replace: true,
+      state: { success: false, isCanceled: true, piece }
+    });
+  };
+
+  const resetInactivityTimer = () => {
+    if (showInactivityModal) return;
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+
+    inactivityTimerRef.current = setTimeout(() => {
+      setShowInactivityModal(true);
+      setCountdown(15);
+    }, 30000); // 30 segundos de inactividad
+  };
+
+  const handleStay = () => {
+    setShowInactivityModal(false);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    resetInactivityTimer();
+  };
+
+  // Manejador del conteo regresivo cuando el popup está abierto
+  useEffect(() => {
+    if (!showInactivityModal) return;
+
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(countdownIntervalRef.current);
+          handleCancelDueToInactivity();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    };
+  }, [showInactivityModal]);
+
+  // Listener global de actividad del usuario
+  useEffect(() => {
+    if (isFinished) return;
+
+    resetInactivityTimer();
+
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    const onActivity = () => {
+      resetInactivityTimer();
+    };
+
+    events.forEach(evt => window.addEventListener(evt, onActivity));
+
+    return () => {
+      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      events.forEach(evt => window.removeEventListener(evt, onActivity));
+    };
+  }, [isFinished, showInactivityModal]);
+
   const handleButtonClick = () => {
     if (!isFinished) return;
     if (audioRef.current) audioRef.current.pause();
@@ -293,6 +366,41 @@ export default function OrderProgress() {
 
       {/* Barra decorativa inferior */}
       <div className="w-full h-5 bg-[#b3d8ff] rounded-xl mt-3 shrink-0" />
+
+      {/* Modal de inactividad: ¿Sigues aquí? */}
+      {showInactivityModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-white rounded-[32px] p-6 max-w-xs w-full shadow-2xl flex flex-col items-center text-center border-4 border-[#b3d8ff]">
+            <div className="w-16 h-16 rounded-full bg-[#d8ecff] flex items-center justify-center text-3xl mb-3 shadow-inner">
+              ⏱️
+            </div>
+            <h3 className="text-2xl font-black text-[#003b75] mb-2 tracking-tight">
+              ¿Sigues aquí?
+            </h3>
+            <p className="text-sm font-bold text-[#003b75]/80 mb-3 leading-relaxed">
+              No hemos detectado actividad en 30 segundos. Tu pedido se cancelará automáticamente en:
+            </p>
+            <div className="text-3xl font-black text-amber-500 mb-5 font-mono bg-amber-50 px-5 py-1.5 rounded-full border border-amber-200">
+              {countdown}s
+            </div>
+            
+            <div className="w-full flex flex-col gap-2.5">
+              <button
+                onClick={handleStay}
+                className="w-full bg-[#003b75] text-[#a6d1ff] hover:text-white font-extrabold py-3.5 px-6 rounded-full shadow-md hover:bg-[#004b93] active:scale-95 transition-all text-base tracking-wide"
+              >
+                ¡Sí, aquí sigo!
+              </button>
+              <button
+                onClick={handleCancelDueToInactivity}
+                className="w-full bg-gray-100 text-gray-500 hover:text-red-600 font-bold py-2.5 px-6 rounded-full transition-all text-sm hover:bg-gray-200"
+              >
+                Cancelar pedido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

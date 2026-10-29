@@ -99,6 +99,20 @@ export const cancelOrderByError = async (estacion) => {
   }
 };
 
+export const cancelOrderDueToInactivity = async () => {
+  try {
+    await apiFetch('/pedido/cancelar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ motivo: 'Cancelado por inactividad (30s sin respuesta)' })
+    });
+    return true;
+  } catch (error) {
+    console.error('Error al cancelar pedido por inactividad:', error);
+    return false;
+  }
+};
+
 const normalize = (str) =>
   String(str || '')
     .normalize('NFD')

@@ -23,7 +23,9 @@ export default function OrderConfirmation() {
 
       {/* Título principal */}
       <h2 className="text-[28px] font-extrabold text-[#003b75] mt-2 mb-4 text-center px-4 leading-tight tracking-tight">
-        {isSuccess ? 'Pedido confirmado' : 'Pedido rechazado'}
+        {isSuccess 
+          ? 'Pedido confirmado' 
+          : (location.state?.isCanceled ? 'Pedido cancelado' : 'Pedido rechazado')}
       </h2>
       
       {isSuccess ? (
@@ -52,10 +54,12 @@ export default function OrderConfirmation() {
           </div>
           
           <h3 className="text-[25px] font-extrabold text-[#003b75] mb-3 text-center px-4 leading-tight">
-            No eres tú, somos nosotros
+            {location.state?.isCanceled ? 'Sesión expirada' : 'No eres tú, somos nosotros'}
           </h3>
-          <p className="text-[15px] font-extrabold text-[#003b75] text-left px-6 leading-snug">
-            Tenemos una pieza en proceso. Espera tu turno para pedir tu pieza
+          <p className="text-[15px] font-extrabold text-[#003b75] text-center px-6 leading-snug">
+            {location.state?.isCanceled
+              ? 'El pedido fue cancelado automáticamente tras 30 segundos de inactividad.'
+              : 'Tenemos una pieza en proceso. Espera tu turno para pedir tu pieza'}
           </p>
         </div>
       )}
