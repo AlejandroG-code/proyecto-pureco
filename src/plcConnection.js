@@ -1,7 +1,11 @@
 // Conexión al servidor Express (soporta VITE_API_URL en producción, middleware en Vite /api y puerto directo 3001)
 const rawBase = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const API_URL = rawBase ? (rawBase.endsWith('/api') ? rawBase : `${rawBase}/api`) : '/api';
-const FALLBACK_API_URL = rawBase ? API_URL : 'http://localhost:3001/api';
+const getFallbackUrl = () => {
+  if (rawBase) return API_URL;
+  const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'localhost';
+  return `http://${host}:3001/api`;
+};
 
 const apiFetch = async (endpoint, options = {}) => {
   try {
@@ -13,7 +17,7 @@ const apiFetch = async (endpoint, options = {}) => {
   } catch {
     // Intentar fallback en puerto 3001
   }
-  return fetch(`${FALLBACK_API_URL}${endpoint}`, options);
+  return fetch(`${getFallbackUrl()}${endpoint}`, options);
 };
 
 export const checkBackendHealth = async () => {

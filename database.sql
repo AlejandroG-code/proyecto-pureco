@@ -121,3 +121,10 @@ INSERT INTO `Almacen` (`ID_almacen`, `ID_estado_historico`, `ID_categoria`, `hor
   (9, 1, 3, 3, 3, 1)
 ON DUPLICATE KEY UPDATE
   `disponible` = VALUES(`disponible`);
+
+-- ==========================================================
+-- PERMISOS PARA CONEXIÓN REMOTA DESDE SCADA (192.168.2.50)
+-- Ejecutar en la pestaña SQL de phpMyAdmin si SCADA no logra conectar:
+-- GRANT ALL PRIVILEGES ON clickgo.* TO 'root'@'%' IDENTIFIED BY '';
+-- FLUSH PRIVILEGES;
+-- ==========================================================

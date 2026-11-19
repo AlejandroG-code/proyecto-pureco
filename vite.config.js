@@ -42,7 +42,13 @@ export default defineConfig(({ command }) => {
     })
   }
 
-  return { plugins }
+  return {
+    server: {
+      host: true,
+      port: 5173
+    },
+    plugins
+  }
 })
 
 
