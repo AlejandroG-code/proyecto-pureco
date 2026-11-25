@@ -124,13 +124,10 @@ const initDatabase = async () => {
       if (!hasTable(['estado_historico'])) {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`estado_historico\` (
-            \`ID_estado_historico\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
-            \`ID_estado\` TINYINT(1) NOT NULL,
+            \`ID_estado_historico\` INT NOT NULL AUTO_INCREMENT,
+            \`ID_estado\` INT NOT NULL,
             \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (\`ID_estado_historico\`),
-            CONSTRAINT \`fk_estado_historico_estado\`
-              FOREIGN KEY (\`ID_estado\`) REFERENCES \`${tables.estado}\` (\`ID_estado\`)
-              ON DELETE CASCADE ON UPDATE CASCADE
+            PRIMARY KEY (\`ID_estado_historico\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
       }
@@ -138,14 +135,11 @@ const initDatabase = async () => {
       if (!hasTable(['alarmas'])) {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`alarmas\` (
-            \`ID_alarmas\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
-            \`ID_estado\` TINYINT(1) NOT NULL,
+            \`ID_alarmas\` INT NOT NULL AUTO_INCREMENT,
+            \`ID_estado\` INT NOT NULL,
             \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             \`descripcion\` TINYTEXT NOT NULL,
-            PRIMARY KEY (\`ID_alarmas\`),
-            CONSTRAINT \`fk_alarmas_estado\`
-              FOREIGN KEY (\`ID_estado\`) REFERENCES \`${tables.estado}\` (\`ID_estado\`)
-              ON DELETE CASCADE ON UPDATE CASCADE
+            PRIMARY KEY (\`ID_alarmas\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
       }
@@ -153,9 +147,9 @@ const initDatabase = async () => {
       if (!hasTable(['categoria_piezas', 'categoría_piezas'])) {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
-            \`ID_categoria\` TINYINT(1) NOT NULL,
-            \`nombre_categoria\` VARCHAR(15) NOT NULL,
-            \`cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`ID_categoria\` INT NOT NULL,
+            \`nombre_categoria\` VARCHAR(50) NOT NULL,
+            \`cantidad\` INT NOT NULL DEFAULT 3,
             PRIMARY KEY (\`ID_categoria\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
@@ -164,19 +158,13 @@ const initDatabase = async () => {
       if (!hasTable(['Almacen', 'Almacén'])) {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`Almacen\` (
-            \`ID_almacen\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
-            \`ID_estado_historico\` MEDIUMINT(6) DEFAULT NULL,
-            \`ID_categoria\` TINYINT(1) NOT NULL,
-            \`horizontal\` TINYINT(2) NOT NULL,
-            \`vertical\` TINYINT(2) NOT NULL,
+            \`ID_almacen\` INT NOT NULL AUTO_INCREMENT,
+            \`ID_estado_historico\` INT DEFAULT NULL,
+            \`ID_categoria\` INT NOT NULL,
+            \`horizontal\` INT NOT NULL,
+            \`vertical\` INT NOT NULL,
             \`disponible\` TINYINT(1) NOT NULL DEFAULT 1,
-            PRIMARY KEY (\`ID_almacen\`),
-            CONSTRAINT \`fk_almacen_estado_historico\`
-              FOREIGN KEY (\`ID_estado_historico\`) REFERENCES \`${tables.estado_historico}\` (\`ID_estado_historico\`)
-              ON DELETE SET NULL ON UPDATE CASCADE,
-            CONSTRAINT \`fk_almacen_categoria\`
-              FOREIGN KEY (\`ID_categoria\`) REFERENCES \`${tables.categoria_piezas}\` (\`ID_categoria\`)
-              ON DELETE CASCADE ON UPDATE CASCADE
+            PRIMARY KEY (\`ID_almacen\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
       }
@@ -185,13 +173,10 @@ const initDatabase = async () => {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
             \`ID_pedido\` INT NOT NULL AUTO_INCREMENT,
-            \`ID_categoria\` TINYINT(1) NOT NULL,
+            \`ID_categoria\` INT NOT NULL,
             \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             \`en_espera\` TINYINT(1) NOT NULL DEFAULT 1,
-            PRIMARY KEY (\`ID_pedido\`),
-            CONSTRAINT \`fk_pedido_categoria\`
-              FOREIGN KEY (\`ID_categoria\`) REFERENCES \`${tables.categoria_piezas}\` (\`ID_categoria\`)
-              ON DELETE CASCADE ON UPDATE CASCADE
+            PRIMARY KEY (\`ID_pedido\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
       }
