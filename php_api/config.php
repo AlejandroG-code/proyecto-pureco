@@ -16,19 +16,40 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'OPTIONS
 }
 
 // ==========================================================
-// CREDENCIALES DE MYSQL EN XAMPP (PC de Alejandra)
+// CREDENCIALES DE MYSQL (leídas automáticamente desde ../.env)
+// Cambia DB_NAME / DB_HOST SOLO en el archivo .env de la raíz.
 // ==========================================================
-define('DB_HOST', '127.0.0.1');
-define('DB_PORT', 3306);
-define('DB_NAME', 'pitufibase'); // Cambiar a 'clickgo' si tu BD tiene ese nombre
-define('DB_USER', 'root');
-define('DB_PASS', '');
+$envValues = [];
+$envFile = dirname(__DIR__) . '/.env';
+if (is_file($envFile) && is_readable($envFile)) {
+    foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $trimmed = trim($line);
+        if ($trimmed === '' || str_starts_with($trimmed, '#') || !str_contains($trimmed, '=')) {
+            continue;
+        }
+        [$k, $v] = explode('=', $trimmed, 2);
+        $envValues[trim($k)] = trim($v, " \t\n\r\0\x0B\"'");
+    }
+}
+
+define('DB_HOST', $envValues['DB_HOST'] ?? '127.0.0.1');
+define('DB_PORT', (int) ($envValues['DB_PORT'] ?? 3306));
+define('DB_NAME', $envValues['DB_NAME'] ?? 'proyecto_redes');
+define('DB_USER', $envValues['DB_USER'] ?? 'root');
+define('DB_PASS', $envValues['DB_PASSWORD'] ?? '');
 
 /**
  * Crea y devuelve una conexión PDO a MySQL.
+ * Si la base de datos no existe, la crea automáticamente.
  */
 function getDbConnection(): PDO
 {
+    $options = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ];
+
     $dsn = sprintf(
         'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
         DB_HOST,
@@ -36,11 +57,19 @@ function getDbConnection(): PDO
         DB_NAME
     );
 
-    return new PDO($dsn, DB_USER, DB_PASS, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES => false,
-    ]);
+    try {
+        return new PDO($dsn, DB_USER, DB_PASS, $options);
+    } catch (PDOException $e) {
+        // Error 1049: Unknown database -> crearla automáticamente y reconectar
+        if ((int) ($e->errorInfo[1] ?? 0) === 1049 || str_contains($e->getMessage(), 'Unknown database')) {
+            $baseDsn = sprintf('mysql:host=%s;port=%d;charset=utf8mb4', DB_HOST, DB_PORT);
+            $pdoInit = new PDO($baseDsn, DB_USER, DB_PASS, $options);
+            $safeDb = str_replace('`', '', DB_NAME);
+            $pdoInit->exec("CREATE DATABASE IF NOT EXISTS `{$safeDb}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+            return new PDO($dsn, DB_USER, DB_PASS, $options);
+        }
+        throw $e;
+    }
 }
 
 /**

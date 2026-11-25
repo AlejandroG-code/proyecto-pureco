@@ -55,11 +55,13 @@ export const requestOrder = async (pieceId, category, quantity) => {
       body: JSON.stringify({ id_categoria })
     });
     const data = await res.json();
-    return Boolean(data.success);
+    if (!res.ok || !data.success) {
+      return { success: false, error: data.error || 'No se pudo registrar el pedido en la base de datos.' };
+    }
+    return { success: true, id_pedido: data.id_pedido };
   } catch (error) {
     console.error('Error enviando orden', error);
-    // Para entorno sin servidor, simular éxito
-    return true; 
+    return { success: false, error: 'No se pudo conectar con el servidor.' };
   }
 };
 

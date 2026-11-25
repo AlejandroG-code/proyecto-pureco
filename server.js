@@ -15,15 +15,18 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
 });
 
-// Configuración de base de datos con soporte para variables de entorno (locales o Railway)
+// Configuración de base de datos centralizada en .env (ÚNICO archivo a editar para cambiar de BD)
+const rawDbName = (process.env.DB_NAME || process.env.MYSQLDATABASE || 'proyecto_redes').trim();
+const dbName = rawDbName.replace(/[`'"]/g, '') || 'proyecto_redes';
+
 const dbConfig = {
-  host: process.env.DB_HOST || process.env.MYSQLHOST || '127.0.0.1',
+  host: (process.env.DB_HOST || process.env.MYSQLHOST || '127.0.0.1').trim(),
   port: Number(process.env.DB_PORT || process.env.MYSQLPORT) || 3306,
-  user: process.env.DB_USER || process.env.MYSQLUSER || 'root',
-  password: process.env.DB_PASSWORD !== undefined 
-    ? process.env.DB_PASSWORD 
+  user: (process.env.DB_USER || process.env.MYSQLUSER || 'root').trim(),
+  password: process.env.DB_PASSWORD !== undefined
+    ? process.env.DB_PASSWORD
     : (process.env.MYSQLPASSWORD !== undefined ? process.env.MYSQLPASSWORD : ''),
-  database: process.env.DB_NAME || process.env.MYSQLDATABASE || 'clickgo',
+  database: dbName,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -37,51 +40,303 @@ const dbConfig = {
 // Pool de conexiones permanente y resistente a caídas temporales
 const pool = mysql.createPool(dbConfig);
 
+// Mapa de nombres reales de tablas (resuelve diferencias de mayúsculas/minúsculas o acentos en BD existentes)
+const tables = {
+  estado: 'Estado',
+  estado_historico: 'estado_historico',
+  alarmas: 'alarmas',
+  categoria_piezas: 'categoria_piezas',
+  almacen: 'Almacen',
+  pedido_historico: 'pedido_historico'
+};
+
+const normalizeTableName = (name) =>
+  String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+const refreshTableNames = async () => {
+  const [tablesResult] = await pool.query('SHOW TABLES');
+  const existing = tablesResult.map((row) => Object.values(row)[0]);
+
+  const findExisting = (candidates, fallback) => {
+    const normalizedCandidates = candidates.map(normalizeTableName);
+    const match = existing.find((t) => normalizedCandidates.includes(normalizeTableName(t)));
+    return match || fallback;
+  };
+
+  tables.estado = findExisting(['Estado', 'estado'], 'Estado');
+  tables.estado_historico = findExisting(['estado_historico'], 'estado_historico');
+  tables.alarmas = findExisting(['alarmas'], 'alarmas');
+  tables.categoria_piezas = findExisting(['categoria_piezas', 'categoría_piezas'], 'categoria_piezas');
+  tables.almacen = findExisting(['Almacen', 'almacen', 'Almacén', 'almacén'], 'Almacen');
+  tables.pedido_historico = findExisting(['pedido_historico'], 'pedido_historico');
+
+  return existing;
+};
+
 let dbInitialized = false;
-let isInitializing = false;
+let initPromise = null;
+
+// Inicializar la base de datos y tablas automáticamente si no existen
+const initDatabase = async () => {
+  if (dbInitialized) return true;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    try {
+      // 1. Conectar sin seleccionar BD para crearla si no existe
+      const tempConn = await mysql.createConnection({
+        host: dbConfig.host,
+        port: dbConfig.port,
+        user: dbConfig.user,
+        password: dbConfig.password,
+        ssl: dbConfig.ssl
+      });
+
+      await tempConn.query(
+        `CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`
+      );
+      await tempConn.end();
+
+      // 2. Detectar tablas ya existentes (por si la BD ya existía con distinto formato de mayúsculas/acentos)
+      const existingBefore = await refreshTableNames();
+      const hasTable = (candidates) => {
+        const norm = candidates.map(normalizeTableName);
+        return existingBefore.some((t) => norm.includes(normalizeTableName(t)));
+      };
+
+      // 3. Crear solo las tablas que falten
+      if (!hasTable(['Estado'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`Estado\` (
+            \`ID_estado\` TINYINT(1) NOT NULL,
+            \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`banda\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1,
+            PRIMARY KEY (\`ID_estado\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      if (!hasTable(['estado_historico'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`estado_historico\` (
+            \`ID_estado_historico\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
+            \`ID_estado\` TINYINT(1) NOT NULL,
+            \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`ID_estado_historico\`),
+            CONSTRAINT \`fk_estado_historico_estado\`
+              FOREIGN KEY (\`ID_estado\`) REFERENCES \`${tables.estado}\` (\`ID_estado\`)
+              ON DELETE CASCADE ON UPDATE CASCADE
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      if (!hasTable(['alarmas'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`alarmas\` (
+            \`ID_alarmas\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
+            \`ID_estado\` TINYINT(1) NOT NULL,
+            \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`descripcion\` TINYTEXT NOT NULL,
+            PRIMARY KEY (\`ID_alarmas\`),
+            CONSTRAINT \`fk_alarmas_estado\`
+              FOREIGN KEY (\`ID_estado\`) REFERENCES \`${tables.estado}\` (\`ID_estado\`)
+              ON DELETE CASCADE ON UPDATE CASCADE
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      if (!hasTable(['categoria_piezas', 'categoría_piezas'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
+            \`ID_categoria\` TINYINT(1) NOT NULL,
+            \`nombre_categoria\` VARCHAR(15) NOT NULL,
+            \`cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
+            PRIMARY KEY (\`ID_categoria\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      if (!hasTable(['Almacen', 'Almacén'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`Almacen\` (
+            \`ID_almacen\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
+            \`ID_estado_historico\` MEDIUMINT(6) DEFAULT NULL,
+            \`ID_categoria\` TINYINT(1) NOT NULL,
+            \`horizontal\` TINYINT(2) NOT NULL,
+            \`vertical\` TINYINT(2) NOT NULL,
+            \`disponible\` TINYINT(1) NOT NULL DEFAULT 1,
+            PRIMARY KEY (\`ID_almacen\`),
+            CONSTRAINT \`fk_almacen_estado_historico\`
+              FOREIGN KEY (\`ID_estado_historico\`) REFERENCES \`${tables.estado_historico}\` (\`ID_estado_historico\`)
+              ON DELETE SET NULL ON UPDATE CASCADE,
+            CONSTRAINT \`fk_almacen_categoria\`
+              FOREIGN KEY (\`ID_categoria\`) REFERENCES \`${tables.categoria_piezas}\` (\`ID_categoria\`)
+              ON DELETE CASCADE ON UPDATE CASCADE
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      if (!hasTable(['pedido_historico'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
+            \`ID_pedido\` INT NOT NULL AUTO_INCREMENT,
+            \`ID_categoria\` TINYINT(1) NOT NULL,
+            \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`en_espera\` TINYINT(1) NOT NULL DEFAULT 1,
+            PRIMARY KEY (\`ID_pedido\`),
+            CONSTRAINT \`fk_pedido_categoria\`
+              FOREIGN KEY (\`ID_categoria\`) REFERENCES \`${tables.categoria_piezas}\` (\`ID_categoria\`)
+              ON DELETE CASCADE ON UPDATE CASCADE
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      // 4. Actualizar mapa final de nombres reales de tablas
+      await refreshTableNames();
+
+      // 5. Insertar datos iniciales solo si faltan (sin sobrescribir datos existentes)
+      try {
+        await pool.query(`
+          INSERT IGNORE INTO \`${tables.estado}\` (\`ID_estado\`, \`almacen\`, \`banda\`, \`mitsubishi\`, \`lugar_entrega\`)
+          VALUES (1, 1, 1, 1, 1)
+        `);
+      } catch (seedErr) {
+        console.warn(`Aviso al inicializar ${tables.estado}:`, seedErr.message);
+      }
+
+      try {
+        await pool.query(`
+          INSERT IGNORE INTO \`${tables.categoria_piezas}\` (\`ID_categoria\`, \`nombre_categoria\`, \`cantidad\`) VALUES
+            (1, 'Electrónica', 3),
+            (2, 'Arte', 3),
+            (3, 'Juguetes', 3)
+        `);
+      } catch (seedErr) {
+        console.warn(`Aviso al inicializar ${tables.categoria_piezas}:`, seedErr.message);
+      }
+
+      try {
+        await pool.query(`
+          INSERT IGNORE INTO \`${tables.estado_historico}\` (\`ID_estado_historico\`, \`ID_estado\`)
+          VALUES (1, 1)
+        `);
+      } catch (seedErr) {
+        console.warn(`Aviso al inicializar ${tables.estado_historico}:`, seedErr.message);
+      }
+
+      try {
+        await pool.query(`
+          INSERT IGNORE INTO \`${tables.almacen}\` (\`ID_almacen\`, \`ID_estado_historico\`, \`ID_categoria\`, \`horizontal\`, \`vertical\`, \`disponible\`) VALUES
+            (1, 1, 1, 1, 1, 1),
+            (2, 1, 1, 1, 2, 1),
+            (3, 1, 1, 1, 3, 1),
+            (4, 1, 2, 2, 1, 1),
+            (5, 1, 2, 2, 2, 1),
+            (6, 1, 2, 2, 3, 1),
+            (7, 1, 3, 3, 1, 1),
+            (8, 1, 3, 3, 2, 1),
+            (9, 1, 3, 3, 3, 1)
+        `);
+      } catch (seedErr) {
+        console.warn(`Aviso al inicializar ${tables.almacen}:`, seedErr.message);
+      }
+
+      dbInitialized = true;
+      console.log(`Base de datos "${dbConfig.database}" verificada/inicializada correctamente.`);
+      return true;
+    } catch (error) {
+      dbInitialized = false;
+      console.warn(
+        `No se pudo inicializar automáticamente la BD "${dbConfig.database}" (verifica que MariaDB/MySQL esté activo y configurado):`,
+        error.message
+      );
+      throw error;
+    } finally {
+      initPromise = null;
+    }
+  })();
+
+  return initPromise;
+};
+
+// Middleware: asegurar que la BD y sus tablas existan antes de cualquier petición a /api/*
+app.use('/api', async (req, res, next) => {
+  try {
+    await initDatabase();
+    next();
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      status: 'error',
+      database: dbConfig.database,
+      error: error.message
+    });
+  }
+});
 
 // Endpoint de verificación de salud del backend y la base de datos
 app.get('/api/health', async (req, res) => {
   try {
-    if (!dbInitialized && !isInitializing) {
-      await initDatabase();
-    }
     await pool.query('SELECT 1');
-    res.json({ success: true, status: 'ok', db: 'connected' });
+    res.json({
+      success: true,
+      status: 'ok',
+      db: 'connected',
+      database: dbConfig.database,
+      tables
+    });
   } catch (error) {
-    res.json({ success: false, status: 'error', db: error.message });
+    dbInitialized = false;
+    res.json({ success: false, status: 'error', database: dbConfig.database, db: error.message });
   }
 });
 
 // 1. Crear un pedido y reiniciar todo el Estado a 1
 app.post('/api/pedidos', async (req, res) => {
-  const { id_categoria } = req.body;
+  const idCategoria = Number(req.body?.id_categoria);
+  if (!idCategoria || Number.isNaN(idCategoria)) {
+    return res.status(400).json({ success: false, error: 'Falta un id_categoria válido.' });
+  }
+
   try {
     // Cerrar cualquier pedido anterior que hubiera quedado en espera
     await pool.execute(
-      'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+      `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
     );
 
     // Insertar nuevo pedido en espera
     const [result] = await pool.execute(
-      'INSERT INTO pedido_historico (ID_categoria, fecha_hora, en_espera) VALUES (?, NOW(), 1)',
-      [id_categoria]
+      `INSERT INTO \`${tables.pedido_historico}\` (ID_categoria, fecha_hora, en_espera) VALUES (?, NOW(), 1)`,
+      [idCategoria]
     );
 
     // Reiniciar el estado de todas las estaciones a 1 cada vez que se hace un pedido nuevo
-    await pool.execute(
-      `INSERT INTO Estado (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
-       VALUES (1, 1, 1, 1, 1)
-       ON DUPLICATE KEY UPDATE
-         almacen = 1,
-         banda = 1,
-         mitsubishi = 1,
-         lugar_entrega = 1`
-    );
+    try {
+      await pool.execute(
+        `INSERT INTO \`${tables.estado}\` (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
+         VALUES (1, 1, 1, 1, 1)
+         ON DUPLICATE KEY UPDATE
+           almacen = 1,
+           banda = 1,
+           mitsubishi = 1,
+           lugar_entrega = 1`
+      );
+    } catch (estadoErr) {
+      console.warn(`Aviso al reiniciar ${tables.estado}:`, estadoErr.message);
+    }
 
-    await pool.execute(
-      'INSERT INTO estado_historico (ID_estado, fecha_hora) VALUES (1, NOW())'
-    );
+    try {
+      await pool.execute(
+        `INSERT INTO \`${tables.estado_historico}\` (ID_estado, fecha_hora) VALUES (1, NOW())`
+      );
+    } catch (histErr) {
+      console.warn(`Aviso al registrar ${tables.estado_historico}:`, histErr.message);
+    }
 
     res.json({ success: true, id_pedido: result.insertId });
   } catch (error) {
@@ -93,7 +348,7 @@ app.post('/api/pedidos', async (req, res) => {
 // 2. Obtener estado del pedido actual (para la vista de progreso y el heartbeat cada 2s)
 app.get('/api/estado', async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
+    const [rows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` ORDER BY ID_estado DESC LIMIT 1`);
     if (rows.length > 0) {
       const est = rows[0];
       const allDone =
@@ -102,12 +357,12 @@ app.get('/api/estado', async (req, res) => {
         Number(est.mitsubishi) === 2 &&
         Number(est.lugar_entrega) === 2;
       const hasError = [est.almacen, est.banda, est.mitsubishi, est.lugar_entrega].some(
-        v => Number(v) === 4
+        (v) => Number(v) === 4
       );
 
       if (allDone || hasError) {
         await pool.execute(
-          'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+          `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
         );
       }
 
@@ -126,7 +381,7 @@ app.put('/api/estado', async (req, res) => {
   const { almacen, banda, mitsubishi, lugar_entrega } = req.body;
   try {
     // Si viene solo un campo o varios, mantenemos los valores previos para los no especificados
-    const [currentRows] = await pool.execute('SELECT * FROM Estado WHERE ID_estado = 1');
+    const [currentRows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` WHERE ID_estado = 1`);
     const current = currentRows[0] || { almacen: 1, banda: 1, mitsubishi: 1, lugar_entrega: 1 };
 
     const vals = {
@@ -137,7 +392,7 @@ app.put('/api/estado', async (req, res) => {
     };
 
     await pool.execute(
-      `INSERT INTO Estado (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
+      `INSERT INTO \`${tables.estado}\` (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
        VALUES (1, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          almacen = VALUES(almacen),
@@ -149,7 +404,7 @@ app.put('/api/estado', async (req, res) => {
 
     // Registrar cambio en estado_historico
     await pool.execute(
-      'INSERT INTO estado_historico (ID_estado, fecha_hora) VALUES (1, NOW())'
+      `INSERT INTO \`${tables.estado_historico}\` (ID_estado, fecha_hora) VALUES (1, NOW())`
     );
 
     // Si alguna estación se puso en 4 (Error), guardar en la tabla alarmas y cancelar el pedido activo
@@ -160,11 +415,11 @@ app.put('/api/estado', async (req, res) => {
     if (errorStations.length > 0) {
       const desc = `Error en estación (${errorStations.join(', ')}) - Pedido cancelado`;
       await pool.execute(
-        'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
+        `INSERT INTO \`${tables.alarmas}\` (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)`,
         [desc]
       );
       await pool.execute(
-        'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+        `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
       );
     }
 
@@ -176,11 +431,11 @@ app.put('/api/estado', async (req, res) => {
       vals.lugar_entrega === 2
     ) {
       await pool.execute(
-        'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+        `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
       );
     }
 
-    const [rows] = await pool.execute('SELECT * FROM Estado WHERE ID_estado = 1');
+    const [rows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` WHERE ID_estado = 1`);
     res.json({ success: true, estado: rows[0] });
   } catch (error) {
     console.error('Error al actualizar estado:', error);
@@ -196,16 +451,16 @@ app.post('/api/pedido/error', async (req, res) => {
 
     // Verificar si ya se canceló el pedido actual para no duplicar alarmas si ya lo hizo PUT /api/estado
     const [pedidosActivos] = await pool.execute(
-      'SELECT ID_pedido FROM pedido_historico WHERE en_espera = 1 LIMIT 1'
+      `SELECT ID_pedido FROM \`${tables.pedido_historico}\` WHERE en_espera = 1 LIMIT 1`
     );
 
     if (pedidosActivos.length > 0) {
       await pool.execute(
-        'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
+        `INSERT INTO \`${tables.alarmas}\` (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)`,
         [desc]
       );
       await pool.execute(
-        'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+        `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
       );
     }
 
@@ -221,10 +476,10 @@ app.post('/api/pedido/cancelar', async (req, res) => {
   const { motivo = 'Cancelado por inactividad' } = req.body || {};
   try {
     await pool.execute(
-      'UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1'
+      `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
     );
     await pool.execute(
-      'INSERT INTO alarmas (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)',
+      `INSERT INTO \`${tables.alarmas}\` (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)`,
       [motivo]
     );
     res.json({ success: true, message: 'Pedido cancelado correctamente' });
@@ -238,7 +493,7 @@ app.post('/api/pedido/cancelar', async (req, res) => {
 app.get('/api/pedido/ultimo', async (req, res) => {
   try {
     // Si en la tabla Estado el pedido anterior ya terminó (todo en 2) o tuvo error (4), liberar en_espera antes de consultar
-    const [estRows] = await pool.execute('SELECT * FROM Estado ORDER BY ID_estado DESC LIMIT 1');
+    const [estRows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` ORDER BY ID_estado DESC LIMIT 1`);
     if (estRows.length > 0) {
       const est = estRows[0];
       const allDone =
@@ -247,14 +502,14 @@ app.get('/api/pedido/ultimo', async (req, res) => {
         Number(est.mitsubishi) === 2 &&
         Number(est.lugar_entrega) === 2;
       const hasError = [est.almacen, est.banda, est.mitsubishi, est.lugar_entrega].some(
-        v => Number(v) === 4
+        (v) => Number(v) === 4
       );
       if (allDone || hasError) {
-        await pool.execute('UPDATE pedido_historico SET en_espera = 0 WHERE en_espera = 1');
+        await pool.execute(`UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`);
       }
     }
 
-    const [rows] = await pool.execute('SELECT * FROM pedido_historico ORDER BY ID_pedido DESC LIMIT 1');
+    const [rows] = await pool.execute(`SELECT * FROM \`${tables.pedido_historico}\` ORDER BY ID_pedido DESC LIMIT 1`);
     if (rows.length > 0) {
       res.json({ success: true, pedido: rows[0] });
     } else {
@@ -269,27 +524,8 @@ app.get('/api/pedido/ultimo', async (req, res) => {
 // 4. Obtener disponibilidad de piezas desde categoría_piezas y Almacén
 app.get('/api/piezas', async (req, res) => {
   try {
-    const [tablesResult] = await pool.execute('SHOW TABLES');
-    const tableNames = tablesResult.map(row => Object.values(row)[0]);
-
-    const findTable = (candidates) =>
-      tableNames.find(t => candidates.includes(t.toLowerCase()));
-
-    const catTable = findTable(['categoria_piezas', 'categoría_piezas']);
-    const almTable = findTable(['almacen', 'almacén']);
-
-    let categoriasRows = [];
-    let almacenRows = [];
-
-    if (catTable) {
-      const [rows] = await pool.execute(`SELECT * FROM \`${catTable}\``);
-      categoriasRows = rows;
-    }
-
-    if (almTable) {
-      const [rows] = await pool.execute(`SELECT * FROM \`${almTable}\``);
-      almacenRows = rows;
-    }
+    const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);
+    const [almacenRows] = await pool.execute(`SELECT * FROM \`${tables.almacen}\``);
 
     res.json({
       success: true,
@@ -310,28 +546,28 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
 
     if (id_almacen !== undefined && id_almacen !== null) {
       await pool.execute(
-        'UPDATE Almacen SET disponible = ? WHERE ID_almacen = ?',
+        `UPDATE \`${tables.almacen}\` SET disponible = ? WHERE ID_almacen = ?`,
         [dispVal, Number(id_almacen)]
       );
     } else if (id_categoria !== undefined && id_categoria !== null) {
       await pool.execute(
-        'UPDATE Almacen SET disponible = ? WHERE ID_categoria = ?',
+        `UPDATE \`${tables.almacen}\` SET disponible = ? WHERE ID_categoria = ?`,
         [dispVal, Number(id_categoria)]
       );
     }
 
     // Recalcular y sincronizar la columna cantidad en categoria_piezas según las piezas disponibles en Almacen
     await pool.execute(`
-      UPDATE categoria_piezas c
+      UPDATE \`${tables.categoria_piezas}\` c
       SET c.cantidad = (
         SELECT COUNT(*)
-        FROM Almacen a
+        FROM \`${tables.almacen}\` a
         WHERE a.ID_categoria = c.ID_categoria AND a.disponible = 1
       )
     `);
 
-    const [categoriasRows] = await pool.execute('SELECT * FROM categoria_piezas');
-    const [almacenRows] = await pool.execute('SELECT * FROM Almacen');
+    const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);
+    const [almacenRows] = await pool.execute(`SELECT * FROM \`${tables.almacen}\``);
 
     res.json({
       success: true,
@@ -344,156 +580,20 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
   }
 });
 
-// Inicializar la base de datos y tablas automáticamente si no existen
-const initDatabase = async () => {
-  if (isInitializing) return;
-  isInitializing = true;
-  try {
-    const tempConn = await mysql.createConnection({
-      host: dbConfig.host,
-      port: dbConfig.port,
-      user: dbConfig.user,
-      password: dbConfig.password,
-      ssl: dbConfig.ssl
-    });
-
-    await tempConn.query(
-      `CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`
-    );
-    await tempConn.end();
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`Estado\` (
-        \`ID_estado\` TINYINT(1) NOT NULL,
-        \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
-        \`banda\` TINYINT(1) NOT NULL DEFAULT 1,
-        \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 1,
-        \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1,
-        PRIMARY KEY (\`ID_estado\`)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`estado_historico\` (
-        \`ID_estado_historico\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
-        \`ID_estado\` TINYINT(1) NOT NULL,
-        \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (\`ID_estado_historico\`),
-        CONSTRAINT \`fk_estado_historico_estado\`
-          FOREIGN KEY (\`ID_estado\`) REFERENCES \`Estado\` (\`ID_estado\`)
-          ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`alarmas\` (
-        \`ID_alarmas\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
-        \`ID_estado\` TINYINT(1) NOT NULL,
-        \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        \`descripcion\` TINYTEXT NOT NULL,
-        PRIMARY KEY (\`ID_alarmas\`),
-        CONSTRAINT \`fk_alarmas_estado\`
-          FOREIGN KEY (\`ID_estado\`) REFERENCES \`Estado\` (\`ID_estado\`)
-          ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
-        \`ID_categoria\` TINYINT(1) NOT NULL,
-        \`nombre_categoria\` VARCHAR(15) NOT NULL,
-        \`cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
-        PRIMARY KEY (\`ID_categoria\`)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`Almacen\` (
-        \`ID_almacen\` MEDIUMINT(6) NOT NULL AUTO_INCREMENT,
-        \`ID_estado_historico\` MEDIUMINT(6) DEFAULT NULL,
-        \`ID_categoria\` TINYINT(1) NOT NULL,
-        \`horizontal\` TINYINT(2) NOT NULL,
-        \`vertical\` TINYINT(2) NOT NULL,
-        \`disponible\` TINYINT(1) NOT NULL DEFAULT 1,
-        PRIMARY KEY (\`ID_almacen\`),
-        CONSTRAINT \`fk_almacen_estado_historico\`
-          FOREIGN KEY (\`ID_estado_historico\`) REFERENCES \`estado_historico\` (\`ID_estado_historico\`)
-          ON DELETE SET NULL ON UPDATE CASCADE,
-        CONSTRAINT \`fk_almacen_categoria\`
-          FOREIGN KEY (\`ID_categoria\`) REFERENCES \`categoria_piezas\` (\`ID_categoria\`)
-          ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
-        \`ID_pedido\` INT NOT NULL AUTO_INCREMENT,
-        \`ID_categoria\` TINYINT(1) NOT NULL,
-        \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        \`en_espera\` TINYINT(1) NOT NULL DEFAULT 1,
-        PRIMARY KEY (\`ID_pedido\`),
-        CONSTRAINT \`fk_pedido_categoria\`
-          FOREIGN KEY (\`ID_categoria\`) REFERENCES \`categoria_piezas\` (\`ID_categoria\`)
-          ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    `);
-
-    // Insertar datos iniciales solo si las tablas están vacías (por defecto Estado en 1)
-    await pool.query(`
-      INSERT IGNORE INTO \`Estado\` (\`ID_estado\`, \`almacen\`, \`banda\`, \`mitsubishi\`, \`lugar_entrega\`)
-      VALUES (1, 1, 1, 1, 1)
-    `);
-
-    await pool.query(`
-      INSERT IGNORE INTO \`categoria_piezas\` (\`ID_categoria\`, \`nombre_categoria\`, \`cantidad\`) VALUES
-        (1, 'Electrónica', 3),
-        (2, 'Arte', 3),
-        (3, 'Juguetes', 3)
-    `);
-
-    await pool.query(`
-      INSERT IGNORE INTO \`estado_historico\` (\`ID_estado_historico\`, \`ID_estado\`)
-      VALUES (1, 1)
-    `);
-
-    await pool.query(`
-      INSERT IGNORE INTO \`Almacen\` (\`ID_almacen\`, \`ID_estado_historico\`, \`ID_categoria\`, \`horizontal\`, \`vertical\`, \`disponible\`) VALUES
-        (1, 1, 1, 1, 1, 1),
-        (2, 1, 1, 1, 2, 1),
-        (3, 1, 1, 1, 3, 1),
-        (4, 1, 2, 2, 1, 1),
-        (5, 1, 2, 2, 2, 1),
-        (6, 1, 2, 2, 3, 1),
-        (7, 1, 3, 3, 1, 1),
-        (8, 1, 3, 3, 2, 1),
-        (9, 1, 3, 3, 3, 1)
-    `);
-
-    dbInitialized = true;
-    console.log('Base de datos clickgo verificada/inicializada correctamente.');
-  } catch (error) {
-    dbInitialized = false;
-    console.warn('No se pudo inicializar automáticamente la BD (verifica que MariaDB/MySQL esté activo y configurado):', error.message);
-  } finally {
-    isInitializing = false;
-  }
-};
-
 const PORT = Number(process.env.PORT) || 3001;
 const server = app.listen(PORT, () => {
-  console.log(`Servidor Click-Go escuchando en puerto ${PORT}`);
-  initDatabase();
+  console.log(`Servidor Click-Go escuchando en puerto ${PORT} (BD: ${dbConfig.database})`);
+  initDatabase().catch(() => {});
 });
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     // El puerto ya está en uso por otra instancia; igual inicializamos/verificamos BD
-    console.warn(`Puerto ${PORT} en uso, verificando conexión a BD...`);
-    initDatabase();
+    console.warn(`Puerto ${PORT} en uso, verificando conexión a BD "${dbConfig.database}"...`);
+    initDatabase().catch(() => {});
   } else {
     console.error('Error en servidor:', err);
   }
 });
 
 export { app, initDatabase };
-

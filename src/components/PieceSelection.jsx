@@ -87,10 +87,22 @@ export default function PieceSelection() {
     setSelectedPiece(pendingPiece.id);
     setLoading(true);
     try {
-      const isSuccess = await requestOrder(pendingPiece.id, pendingPiece.category, 1);
-      navigate('/confirmation', { state: { success: isSuccess, piece: pendingPiece } });
+      const result = await requestOrder(pendingPiece.id, pendingPiece.category, 1);
+      navigate('/confirmation', {
+        state: {
+          success: Boolean(result?.success),
+          errorMessage: result?.error || null,
+          piece: pendingPiece
+        }
+      });
     } catch (e) {
-      navigate('/confirmation', { state: { success: false, piece: pendingPiece } });
+      navigate('/confirmation', {
+        state: {
+          success: false,
+          errorMessage: e?.message || 'Error inesperado al crear el pedido.',
+          piece: pendingPiece
+        }
+      });
     }
     setLoading(false);
   };

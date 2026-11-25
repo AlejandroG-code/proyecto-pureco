@@ -54,12 +54,14 @@ export default function OrderConfirmation() {
           </div>
           
           <h3 className="text-[25px] font-extrabold text-[#003b75] mb-3 text-center px-4 leading-tight">
-            {location.state?.isCanceled ? 'Sesión expirada' : 'No eres tú, somos nosotros'}
+            {location.state?.isCanceled
+              ? 'Sesión expirada'
+              : (location.state?.errorMessage ? 'Error al procesar el pedido' : 'No eres tú, somos nosotros')}
           </h3>
           <p className="text-[15px] font-extrabold text-[#003b75] text-center px-6 leading-snug">
             {location.state?.isCanceled
               ? 'El pedido fue cancelado automáticamente tras 30 segundos de inactividad.'
-              : 'Tenemos una pieza en proceso. Espera tu turno para pedir tu pieza'}
+              : (location.state?.errorMessage || 'Tenemos una pieza en proceso. Espera tu turno para pedir tu pieza')}
           </p>
         </div>
       )}
