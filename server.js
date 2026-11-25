@@ -406,11 +406,34 @@ const initDatabase = async () => {
         // Inicializar tabla Piezas con las 9 piezas y su relación a categoria_piezas (ID_categoria)
         const [piezasColsResult] = await pool.query(`SHOW COLUMNS FROM \`${tables.piezas}\``);
         const pColNames = piezasColsResult.map((c) => c.Field);
-        const pIdCol = pColNames.find((c) => ['id_pieza', 'id_piezas', 'id'].includes(normalizeName(c))) || 'ID_pieza';
-        const pCatCol = pColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
-        const pNameCol =
-          pColNames.find((c) => ['nombre_pieza', 'nombre', 'pieza'].includes(normalizeName(c))) || 'nombre_pieza';
+        const pIdCol =
+          pColNames.find((c) => ['id_pieza', 'id_piezas', 'id'].includes(normalizeName(c))) ||
+          pColNames[0] ||
+          'ID_pieza';
+        const pCatCol =
+          pColNames.find((c) => ['id_categoria', 'categoria_id', 'categoria'].includes(normalizeName(c))) ||
+          'ID_categoria';
         const pDispCol = pColNames.find((c) => normalizeName(c) === 'disponible') || null;
+        let pNameCol =
+          pColNames.find((c) =>
+            ['nombre_pieza', 'nombre_piezas', 'nombre', 'pieza', 'piezas', 'descripcion', 'producto', 'tipo', 'articulo'].includes(
+              normalizeName(c)
+            )
+          ) || null;
+
+        if (!pNameCol) {
+          const textCol = piezasColsResult.find((c) => {
+            const type = String(c.Type || '').toLowerCase();
+            const isKnown = [pIdCol, pCatCol, pDispCol].filter(Boolean).includes(c.Field);
+            return !isKnown && (type.includes('char') || type.includes('text'));
+          });
+          pNameCol = textCol ? textCol.Field : null;
+        }
+
+        if (!pNameCol) {
+          await pool.query(`ALTER TABLE \`${tables.piezas}\` ADD COLUMN \`nombre_pieza\` VARCHAR(50) NOT NULL DEFAULT ''`);
+          pNameCol = 'nombre_pieza';
+        }
 
         const defaultPiezas = [
           [1, 1, 'Computadoras'],

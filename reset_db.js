@@ -188,11 +188,37 @@ async function resetDatabase() {
     // 2. Insertar las 9 piezas en Piezas con su relación ID_categoria
     const [pCols] = await conn.query(`SHOW COLUMNS FROM \`${t.piezas}\``);
     const pColNames = pCols.map((c) => c.Field);
-    const pIdCol = pColNames.find((c) => ['id_pieza', 'id_piezas', 'id'].includes(normalizeName(c))) || 'ID_pieza';
-    const pCatCol = pColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
-    const pNameCol =
-      pColNames.find((c) => ['nombre_pieza', 'nombre', 'pieza'].includes(normalizeName(c))) || 'nombre_pieza';
+    const pIdCol =
+      pColNames.find((c) => ['id_pieza', 'id_piezas', 'id'].includes(normalizeName(c))) ||
+      pColNames[0] ||
+      'ID_pieza';
+    const pCatCol =
+      pColNames.find((c) => ['id_categoria', 'categoria_id', 'categoria'].includes(normalizeName(c))) ||
+      'ID_categoria';
     const pDispCol = pColNames.find((c) => normalizeName(c) === 'disponible') || null;
+    let pNameCol =
+      pColNames.find((c) =>
+        ['nombre_pieza', 'nombre_piezas', 'nombre', 'pieza', 'piezas', 'descripcion', 'producto', 'tipo', 'articulo'].includes(
+          normalizeName(c)
+        )
+      ) || null;
+
+    if (!pNameCol) {
+      // Tomar la primera columna de texto (varchar/char/text) que exista en Piezas
+      const textCol = pCols.find((c) => {
+        const type = String(c.Type || '').toLowerCase();
+        const isKnown = [pIdCol, pCatCol, pDispCol].filter(Boolean).includes(c.Field);
+        return !isKnown && (type.includes('char') || type.includes('text'));
+      });
+      pNameCol = textCol ? textCol.Field : null;
+    }
+
+    if (!pNameCol) {
+      await conn.query(`ALTER TABLE \`${t.piezas}\` ADD COLUMN \`nombre_pieza\` VARCHAR(50) NOT NULL DEFAULT ''`);
+      pNameCol = 'nombre_pieza';
+    }
+
+    console.log(`   Columnas detectadas en "${t.piezas}":`, { pIdCol, pCatCol, pNameCol, pDispCol });
 
     const defaultPiezas = [
       [1, 1, 'Computadoras'],
@@ -286,19 +312,50 @@ async function resetDatabase() {
       VALUES (1, 3, 3, 3, 3, NOW())
     `);
 
-    // 5. Inicializar Almacen con las 9 posiciones disponibles
-    await conn.query(`
-      INSERT INTO \`${t.almacen}\` (\`ID_almacen\`, \`ID_estado_historico\`, \`ID_categoria\`, \`horizontal\`, \`vertical\`, \`disponible\`) VALUES
-        (1, 1, 1, 1, 1, 1),
-        (2, 1, 1, 1, 2, 1),
-        (3, 1, 1, 1, 3, 1),
-        (4, 1, 2, 2, 1, 1),
-        (5, 1, 2, 2, 2, 1),
-        (6, 1, 2, 2, 3, 1),
-        (7, 1, 3, 3, 1, 1),
-        (8, 1, 3, 3, 2, 1),
-        (9, 1, 3, 3, 3, 1)
-    `);
+    // 5. Inicializar Almacen con las 9 posiciones disponibles (usando las columnas reales que existan)
+    const [almCols] = await conn.query(`SHOW COLUMNS FROM \`${t.almacen}\``);
+    const almColNames = almCols.map((c) => c.Field);
+    const findAlmCol = (candidates) => {
+      const norm = candidates.map(normalizeName);
+      return almColNames.find((c) => norm.includes(normalizeName(c))) || null;
+    };
+
+    const almIdCol = findAlmCol(['ID_almacen', 'id_almacen', 'id']);
+    const almEhCol = findAlmCol(['ID_estado_historico', 'id_estado_historico']);
+    const almCatCol = findAlmCol(['ID_categoria', 'id_categoria']);
+    const almHorCol = findAlmCol(['horizontal', 'fila', 'x']);
+    const almVerCol = findAlmCol(['vertical', 'columna', 'y']);
+    const almDispCol = findAlmCol(['disponible', 'estado', 'activo']);
+
+    const defaultAlmacen = [
+      [1, 1, 1, 1, 1, 1],
+      [2, 1, 1, 1, 2, 1],
+      [3, 1, 1, 1, 3, 1],
+      [4, 1, 2, 2, 1, 1],
+      [5, 1, 2, 2, 2, 1],
+      [6, 1, 2, 2, 3, 1],
+      [7, 1, 3, 3, 1, 1],
+      [8, 1, 3, 3, 2, 1],
+      [9, 1, 3, 3, 3, 1]
+    ];
+
+    for (const [idAlm, idEh, idCat, hor, ver, disp] of defaultAlmacen) {
+      const cols = [];
+      const vals = [];
+      if (almIdCol) { cols.push(`\`${almIdCol}\``); vals.push(idAlm); }
+      if (almEhCol) { cols.push(`\`${almEhCol}\``); vals.push(idEh); }
+      if (almCatCol) { cols.push(`\`${almCatCol}\``); vals.push(idCat); }
+      if (almHorCol) { cols.push(`\`${almHorCol}\``); vals.push(hor); }
+      if (almVerCol) { cols.push(`\`${almVerCol}\``); vals.push(ver); }
+      if (almDispCol) { cols.push(`\`${almDispCol}\``); vals.push(disp); }
+
+      if (cols.length > 0) {
+        await conn.execute(
+          `INSERT INTO \`${t.almacen}\` (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+          vals
+        );
+      }
+    }
 
     await conn.query('SET FOREIGN_KEY_CHECKS = 1');
 
