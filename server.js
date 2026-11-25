@@ -292,8 +292,9 @@ const initDatabase = async () => {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
             \`ID_categoria\` INT NOT NULL,
-            \`nombre_categoria\` VARCHAR(50) NOT NULL,
-            \`cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`Nombre_categoria\` VARCHAR(50) NOT NULL,
+            \`Cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`Posicion\` VARCHAR(20) NOT NULL DEFAULT '',
             PRIMARY KEY (\`ID_categoria\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
@@ -371,33 +372,35 @@ const initDatabase = async () => {
         const catIdCol = catColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
         const catNameCol =
           catColNames.find((c) => ['nombre_categoria', 'nombre', 'categoria'].includes(normalizeName(c))) ||
-          'nombre_categoria';
-        const catCantCol = catColNames.find((c) => normalizeName(c) === 'cantidad') || null;
+          'Nombre_categoria';
+        let catCantCol = catColNames.find((c) => normalizeName(c) === 'cantidad') || null;
+        let catPosCol = catColNames.find((c) => normalizeName(c) === 'posicion') || null;
 
-        // Asegurar que SOLO existan 3 categorías: 1=Electrónica, 2=Arte, 3=Juguetes
+        if (!catCantCol) {
+          await pool.query(`ALTER TABLE \`${tables.categoria_piezas}\` ADD COLUMN \`Cantidad\` TINYINT(1) NOT NULL DEFAULT 3`);
+          catCantCol = 'Cantidad';
+        }
+        if (!catPosCol) {
+          await pool.query(`ALTER TABLE \`${tables.categoria_piezas}\` ADD COLUMN \`Posicion\` VARCHAR(20) NOT NULL DEFAULT ''`);
+          catPosCol = 'Posicion';
+        }
+
+        // Asegurar que SOLO existan 3 categorías: 1=Electronica (3, 1,2,3), 2=Arte (2, 4,5), 3=Juguetes (2, 6,7)
         try {
           await pool.query(`DELETE FROM \`${tables.categoria_piezas}\` WHERE \`${catIdCol}\` NOT IN (1, 2, 3)`);
         } catch (delErr) {
           console.warn(`Aviso al limpiar categorías extra en ${tables.categoria_piezas}:`, delErr.message);
         }
 
-        if (catCantCol) {
-          await pool.query(`
-            INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`, \`${catCantCol}\`) VALUES
-              (1, 'Electrónica', 3),
-              (2, 'Arte', 3),
-              (3, 'Juguetes', 3)
-            ON DUPLICATE KEY UPDATE \`${catNameCol}\` = VALUES(\`${catNameCol}\`)
-          `);
-        } else {
-          await pool.query(`
-            INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`) VALUES
-              (1, 'Electrónica'),
-              (2, 'Arte'),
-              (3, 'Juguetes')
-            ON DUPLICATE KEY UPDATE \`${catNameCol}\` = VALUES(\`${catNameCol}\`)
-          `);
-        }
+        await pool.query(`
+          INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`, \`${catCantCol}\`, \`${catPosCol}\`) VALUES
+            (1, 'Electronica', 3, '1,2,3'),
+            (2, 'Arte', 2, '4,5'),
+            (3, 'Juguetes', 2, '6,7')
+          ON DUPLICATE KEY UPDATE
+            \`${catNameCol}\` = VALUES(\`${catNameCol}\`),
+            \`${catPosCol}\` = VALUES(\`${catPosCol}\`)
+        `);
       } catch (seedErr) {
         console.warn(`Aviso al inicializar ${tables.categoria_piezas}:`, seedErr.message);
       }
