@@ -47,7 +47,6 @@ const tables = {
   alarmas: 'alarmas',
   categoria_piezas: 'categoria_piezas',
   piezas: 'Piezas',
-  almacen: 'Almacen',
   pedido_historico: 'pedido_historico'
 };
 
@@ -94,7 +93,6 @@ const refreshTableNames = async () => {
   tables.alarmas = findExisting(['alarmas'], 'alarmas');
   tables.categoria_piezas = findExisting(['categoria_piezas', 'categoría_piezas'], 'categoria_piezas');
   tables.piezas = findExisting(['Piezas', 'piezas'], 'Piezas');
-  tables.almacen = findExisting(['Almacen', 'almacen', 'Almacén', 'almacén'], 'Almacen');
   tables.pedido_historico = findExisting(['pedido_historico'], 'pedido_historico');
 
   return existing;
@@ -312,20 +310,6 @@ const initDatabase = async () => {
         `);
       }
 
-      if (!hasTable(['Almacen', 'Almacén'])) {
-        await pool.query(`
-          CREATE TABLE IF NOT EXISTS \`Almacen\` (
-            \`ID_almacen\` INT NOT NULL AUTO_INCREMENT,
-            \`ID_estado_historico\` INT DEFAULT NULL,
-            \`ID_categoria\` INT NOT NULL,
-            \`horizontal\` INT NOT NULL,
-            \`vertical\` INT NOT NULL,
-            \`disponible\` TINYINT(1) NOT NULL DEFAULT 1,
-            PRIMARY KEY (\`ID_almacen\`)
-          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        `);
-      }
-
       if (!hasTable(['pedido_historico'])) {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
@@ -476,23 +460,6 @@ const initDatabase = async () => {
         `);
       } catch (seedErr) {
         console.warn(`Aviso al inicializar ${tables.estado_historico}:`, seedErr.message);
-      }
-
-      try {
-        await pool.query(`
-          INSERT IGNORE INTO \`${tables.almacen}\` (\`ID_almacen\`, \`ID_estado_historico\`, \`ID_categoria\`, \`horizontal\`, \`vertical\`, \`disponible\`) VALUES
-            (1, 1, 1, 1, 1, 1),
-            (2, 1, 1, 1, 2, 1),
-            (3, 1, 1, 1, 3, 1),
-            (4, 1, 2, 2, 1, 1),
-            (5, 1, 2, 2, 2, 1),
-            (6, 1, 2, 2, 3, 1),
-            (7, 1, 3, 3, 1, 1),
-            (8, 1, 3, 3, 2, 1),
-            (9, 1, 3, 3, 3, 1)
-        `);
-      } catch (seedErr) {
-        console.warn(`Aviso al inicializar ${tables.almacen}:`, seedErr.message);
       }
 
       dbInitialized = true;
@@ -827,11 +794,10 @@ app.get('/api/pedido/ultimo', async (req, res) => {
   }
 });
 
-// 4. Obtener disponibilidad de piezas desde categoria_piezas, Piezas y Almacen
+// 4. Obtener disponibilidad de piezas desde categoria_piezas y Piezas
 app.get('/api/piezas', async (req, res) => {
   try {
     const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);
-    const [almacenRows] = await pool.execute(`SELECT * FROM \`${tables.almacen}\``);
     let piezasRows = [];
     try {
       const [rows] = await pool.execute(`SELECT * FROM \`${tables.piezas}\``);
@@ -843,8 +809,7 @@ app.get('/api/piezas', async (req, res) => {
     res.json({
       success: true,
       categoria_piezas: categoriasRows,
-      piezas: piezasRows,
-      almacen: almacenRows
+      piezas: piezasRows
     });
   } catch (error) {
     console.error('Error al obtener disponibilidad de piezas:', error);
@@ -852,30 +817,23 @@ app.get('/api/piezas', async (req, res) => {
   }
 });
 
-// 4b. Actualizar disponibilidad de una pieza o categoría en Almacen y Piezas
+// 4b. Actualizar disponibilidad de una pieza o categoría en Piezas y categoria_piezas
 app.put('/api/piezas/disponibilidad', async (req, res) => {
-  const { id_almacen, id_categoria, disponible } = req.body;
+  const { id_almacen, id_pieza, id_categoria, disponible } = req.body;
+  const targetPiezaId = id_pieza !== undefined && id_pieza !== null ? id_pieza : id_almacen;
   try {
     const dispVal = Number(disponible) ? 1 : 0;
 
-    if (id_almacen !== undefined && id_almacen !== null) {
-      await pool.execute(
-        `UPDATE \`${tables.almacen}\` SET disponible = ? WHERE ID_almacen = ?`,
-        [dispVal, Number(id_almacen)]
-      );
+    if (targetPiezaId !== undefined && targetPiezaId !== null) {
       try {
         await pool.execute(
           `UPDATE \`${tables.piezas}\` SET disponible = ? WHERE ID_pieza = ?`,
-          [dispVal, Number(id_almacen)]
+          [dispVal, Number(targetPiezaId)]
         );
       } catch {
         // Si la tabla Piezas en BD externa no tiene columna disponible, continuar sin error
       }
     } else if (id_categoria !== undefined && id_categoria !== null) {
-      await pool.execute(
-        `UPDATE \`${tables.almacen}\` SET disponible = ? WHERE ID_categoria = ?`,
-        [dispVal, Number(id_categoria)]
-      );
       try {
         await pool.execute(
           `UPDATE \`${tables.piezas}\` SET disponible = ? WHERE ID_categoria = ?`,
@@ -886,22 +844,21 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
       }
     }
 
-    // Recalcular y sincronizar la columna cantidad en categoria_piezas según las piezas disponibles en Almacen
+    // Recalcular y sincronizar la columna Cantidad en categoria_piezas según las piezas disponibles en Piezas
     try {
       await pool.execute(`
         UPDATE \`${tables.categoria_piezas}\` c
-        SET c.cantidad = (
+        SET c.Cantidad = (
           SELECT COUNT(*)
-          FROM \`${tables.almacen}\` a
-          WHERE a.ID_categoria = c.ID_categoria AND a.disponible = 1
+          FROM \`${tables.piezas}\` p
+          WHERE p.ID_categoria = c.ID_categoria AND p.disponible = 1
         )
       `);
     } catch {
-      // Continuar si la tabla categoria_piezas no tiene columna cantidad
+      // Continuar si la tabla no tiene columna Cantidad o disponible
     }
 
     const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);
-    const [almacenRows] = await pool.execute(`SELECT * FROM \`${tables.almacen}\``);
     let piezasRows = [];
     try {
       const [rows] = await pool.execute(`SELECT * FROM \`${tables.piezas}\``);
@@ -913,8 +870,7 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
     res.json({
       success: true,
       categoria_piezas: categoriasRows,
-      piezas: piezasRows,
-      almacen: almacenRows
+      piezas: piezasRows
     });
   } catch (error) {
     console.error('Error al actualizar disponibilidad de pieza:', error);

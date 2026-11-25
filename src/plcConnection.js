@@ -194,21 +194,23 @@ export const fetchDisponibilidad = async () => {
     const pieces = { ...defaultAvailability.pieces };
 
     const catRows = Array.isArray(data.categoria_piezas) ? data.categoria_piezas : [];
-    const almRows = Array.isArray(data.almacen) ? data.almacen : [];
+    const piezasRows = Array.isArray(data.piezas)
+      ? data.piezas
+      : (Array.isArray(data.almacen) ? data.almacen : []);
 
-    // 1. Evaluar tabla Almacén por pieza individual (ID_almacen 1..9)
-    if (almRows.length > 0) {
-      for (const row of almRows) {
-        const idAlm = Number(row.ID_almacen ?? row.id_almacen);
-        const pieceId = PIECE_BY_ALMACEN_ID[idAlm];
-        const isDisp = Boolean(Number(row.disponible ?? row.Disponible ?? 0));
-        if (pieceId) {
-          pieces[pieceId] = isDisp;
+    // 1. Evaluar tabla Piezas por pieza individual (ID_pieza 1..9)
+    if (piezasRows.length > 0) {
+      for (const row of piezasRows) {
+        const idPieza = Number(row.ID_pieza ?? row.id_pieza ?? row.ID_almacen ?? row.id_almacen);
+        const pieceId = PIECE_BY_ALMACEN_ID[idPieza];
+        const rawDisp = row.disponible ?? row.Disponible;
+        if (pieceId && rawDisp !== undefined && rawDisp !== null) {
+          pieces[pieceId] = Boolean(Number(rawDisp));
         }
       }
     }
 
-    // 2. Evaluar tabla categoría_piezas (ID_categoria, nombre_categoria, cantidad)
+    // 2. Evaluar tabla categoría_piezas (ID_categoria, Nombre_categoria, Cantidad)
     for (const row of catRows) {
       const idCat = Number(row.ID_categoria ?? row.id_categoria);
       let catName = CATEGORY_BY_ID[idCat];
@@ -223,8 +225,9 @@ export const fetchDisponibilidad = async () => {
         }
       }
 
-      if (catName && row.cantidad !== undefined && row.cantidad !== null) {
-        const cantidad = Number(row.cantidad);
+      const rawCantidad = row.cantidad ?? row.Cantidad;
+      if (catName && rawCantidad !== undefined && rawCantidad !== null) {
+        const cantidad = Number(rawCantidad);
         categories[catName] = cantidad > 0;
       }
     }

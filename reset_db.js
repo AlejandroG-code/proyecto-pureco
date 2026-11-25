@@ -110,20 +110,6 @@ async function resetDatabase() {
       `);
     }
 
-    if (!hasTable(['Almacen', 'Almacén'])) {
-      await conn.query(`
-        CREATE TABLE IF NOT EXISTS \`Almacen\` (
-          \`ID_almacen\` INT NOT NULL AUTO_INCREMENT,
-          \`ID_estado_historico\` INT DEFAULT NULL,
-          \`ID_categoria\` INT NOT NULL,
-          \`horizontal\` INT NOT NULL,
-          \`vertical\` INT NOT NULL,
-          \`disponible\` TINYINT(1) NOT NULL DEFAULT 1,
-          PRIMARY KEY (\`ID_almacen\`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-      `);
-    }
-
     if (!hasTable(['pedido_historico'])) {
       await conn.query(`
         CREATE TABLE IF NOT EXISTS \`pedido_historico\` (
@@ -150,11 +136,18 @@ async function resetDatabase() {
       alarmas: getTable(['alarmas'], 'alarmas'),
       categoria_piezas: getTable(['categoria_piezas', 'categoría_piezas'], 'categoria_piezas'),
       piezas: getTable(['Piezas', 'piezas'], 'Piezas'),
-      almacen: getTable(['Almacen', 'almacen', 'Almacén', 'almacén'], 'Almacen'),
       pedido_historico: getTable(['pedido_historico'], 'pedido_historico')
     };
 
     await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+
+    // Eliminar tabla Almacen si existía en la base de datos
+    const existingAlmacen = allTables.find((name) =>
+      ['almacen', 'almacén'].includes(normalizeName(name))
+    );
+    if (existingAlmacen) {
+      await conn.query(`DROP TABLE IF EXISTS \`${existingAlmacen}\``);
+    }
 
     // Limpiar todas las tablas y reiniciar AUTO_INCREMENT
     for (const tableName of Object.values(t)) {
@@ -317,59 +310,14 @@ async function resetDatabase() {
       VALUES (1, 3, 3, 3, 3, NOW())
     `);
 
-    // 5. Inicializar Almacen con las 9 posiciones disponibles (usando las columnas reales que existan)
-    const [almCols] = await conn.query(`SHOW COLUMNS FROM \`${t.almacen}\``);
-    const almColNames = almCols.map((c) => c.Field);
-    const findAlmCol = (candidates) => {
-      const norm = candidates.map(normalizeName);
-      return almColNames.find((c) => norm.includes(normalizeName(c))) || null;
-    };
-
-    const almIdCol = findAlmCol(['ID_almacen', 'id_almacen', 'id']);
-    const almEhCol = findAlmCol(['ID_estado_historico', 'id_estado_historico']);
-    const almCatCol = findAlmCol(['ID_categoria', 'id_categoria']);
-    const almHorCol = findAlmCol(['horizontal', 'fila', 'x']);
-    const almVerCol = findAlmCol(['vertical', 'columna', 'y']);
-    const almDispCol = findAlmCol(['disponible', 'estado', 'activo']);
-
-    const defaultAlmacen = [
-      [1, 1, 1, 1, 1, 1],
-      [2, 1, 1, 1, 2, 1],
-      [3, 1, 1, 1, 3, 1],
-      [4, 1, 2, 2, 1, 1],
-      [5, 1, 2, 2, 2, 1],
-      [6, 1, 2, 2, 3, 1],
-      [7, 1, 3, 3, 1, 1],
-      [8, 1, 3, 3, 2, 1],
-      [9, 1, 3, 3, 3, 1]
-    ];
-
-    for (const [idAlm, idEh, idCat, hor, ver, disp] of defaultAlmacen) {
-      const cols = [];
-      const vals = [];
-      if (almIdCol) { cols.push(`\`${almIdCol}\``); vals.push(idAlm); }
-      if (almEhCol) { cols.push(`\`${almEhCol}\``); vals.push(idEh); }
-      if (almCatCol) { cols.push(`\`${almCatCol}\``); vals.push(idCat); }
-      if (almHorCol) { cols.push(`\`${almHorCol}\``); vals.push(hor); }
-      if (almVerCol) { cols.push(`\`${almVerCol}\``); vals.push(ver); }
-      if (almDispCol) { cols.push(`\`${almDispCol}\``); vals.push(disp); }
-
-      if (cols.length > 0) {
-        await conn.execute(
-          `INSERT INTO \`${t.almacen}\` (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
-          vals
-        );
-      }
-    }
-
     await conn.query('SET FOREIGN_KEY_CHECKS = 1');
 
     console.log(`\n✅ Base de datos "${dbName}" limpiada y reinicializada correctamente:`);
-    console.log(`   - ${t.categoria_piezas}: 3 categorías (Electrónica, Arte, Juguetes)`);
+    console.log(`   - ${t.categoria_piezas}: 3 categorías (Electronica, Arte, Juguetes)`);
     console.log(`   - ${t.piezas}: 9 piezas con su relación ID_categoria`);
-    console.log(`   - ${t.almacen}: 9 posiciones disponibles`);
     console.log(`   - ${t.estado} y ${t.estado_historico}: todas las estaciones en 3 (En espera)`);
     console.log(`   - ${t.pedido_historico} y ${t.alarmas}: vacías`);
+    console.log(`   - Tabla Almacen: eliminada`);
   } catch (error) {
     console.error('❌ Error al limpiar la base de datos:', error.message);
     process.exitCode = 1;
