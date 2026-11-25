@@ -50,7 +50,16 @@ const tables = {
   pedido_historico: 'pedido_historico'
 };
 
-const normalizeTableName = (name) =>
+// Mapa de nombres reales de columnas de la tabla Estado (ej. si en proyecto_redes se llama rampa/entrega en vez de lugar_entrega)
+const estadoCols = {
+  id: 'ID_estado',
+  almacen: 'almacen',
+  banda: 'banda',
+  mitsubishi: 'mitsubishi',
+  lugar_entrega: 'lugar_entrega'
+};
+
+const normalizeName = (name) =>
   String(name || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -61,8 +70,8 @@ const refreshTableNames = async () => {
   const existing = tablesResult.map((row) => Object.values(row)[0]);
 
   const findExisting = (candidates, fallback) => {
-    const normalizedCandidates = candidates.map(normalizeTableName);
-    const match = existing.find((t) => normalizedCandidates.includes(normalizeTableName(t)));
+    const normalizedCandidates = candidates.map(normalizeName);
+    const match = existing.find((t) => normalizedCandidates.includes(normalizeName(t)));
     return match || fallback;
   };
 
@@ -74,6 +83,62 @@ const refreshTableNames = async () => {
   tables.pedido_historico = findExisting(['pedido_historico'], 'pedido_historico');
 
   return existing;
+};
+
+const refreshEstadoColumns = async () => {
+  const [colsResult] = await pool.query(`SHOW COLUMNS FROM \`${tables.estado}\``);
+  const colNames = colsResult.map((c) => c.Field);
+
+  const findCol = (candidates) => {
+    const norm = candidates.map(normalizeName);
+    return colNames.find((c) => norm.includes(normalizeName(c))) || null;
+  };
+
+  estadoCols.id = findCol(['ID_estado', 'id_estado', 'id']) || colNames[0] || 'ID_estado';
+  estadoCols.almacen = findCol(['almacen', 'almacén']) || 'almacen';
+  estadoCols.banda = findCol(['banda']) || 'banda';
+  estadoCols.mitsubishi = findCol(['mitsubishi', 'robot']) || 'mitsubishi';
+
+  let entregaCol = findCol([
+    'lugar_entrega',
+    'lugar_de_entrega',
+    'rampa',
+    'entrega',
+    'zona_entrega',
+    'estacion_entrega',
+    'punto_entrega'
+  ]);
+
+  if (!entregaCol) {
+    // Si hay una 5ta columna con otro nombre, usarla automáticamente
+    const known = new Set(
+      [estadoCols.id, estadoCols.almacen, estadoCols.banda, estadoCols.mitsubishi].map(normalizeName)
+    );
+    entregaCol = colNames.find((c) => !known.has(normalizeName(c))) || null;
+  }
+
+  if (!entregaCol) {
+    // Si la tabla realmente no tiene columna de entrega/rampa, agregarla
+    await pool.query(
+      `ALTER TABLE \`${tables.estado}\` ADD COLUMN \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1`
+    );
+    entregaCol = 'lugar_entrega';
+  }
+
+  estadoCols.lugar_entrega = entregaCol;
+  console.log(`Columnas detectadas en "${tables.estado}":`, estadoCols);
+};
+
+const formatEstadoRow = (row) => {
+  if (!row) return null;
+  return {
+    ...row,
+    ID_estado: row[estadoCols.id] ?? row.ID_estado ?? 1,
+    almacen: row[estadoCols.almacen] ?? row.almacen ?? 1,
+    banda: row[estadoCols.banda] ?? row.banda ?? 1,
+    mitsubishi: row[estadoCols.mitsubishi] ?? row.mitsubishi ?? 1,
+    lugar_entrega: row[estadoCols.lugar_entrega] ?? row.lugar_entrega ?? 1
+  };
 };
 
 let dbInitialized = false;
@@ -103,8 +168,8 @@ const initDatabase = async () => {
       // 2. Detectar tablas ya existentes (por si la BD ya existía con distinto formato de mayúsculas/acentos)
       const existingBefore = await refreshTableNames();
       const hasTable = (candidates) => {
-        const norm = candidates.map(normalizeTableName);
-        return existingBefore.some((t) => norm.includes(normalizeTableName(t)));
+        const norm = candidates.map(normalizeName);
+        return existingBefore.some((t) => norm.includes(normalizeName(t)));
       };
 
       // 3. Crear solo las tablas que falten
@@ -181,13 +246,14 @@ const initDatabase = async () => {
         `);
       }
 
-      // 4. Actualizar mapa final de nombres reales de tablas
+      // 4. Actualizar mapa final de nombres reales de tablas y columnas de Estado
       await refreshTableNames();
+      await refreshEstadoColumns();
 
       // 5. Insertar datos iniciales solo si faltan (sin sobrescribir datos existentes)
       try {
         await pool.query(`
-          INSERT IGNORE INTO \`${tables.estado}\` (\`ID_estado\`, \`almacen\`, \`banda\`, \`mitsubishi\`, \`lugar_entrega\`)
+          INSERT IGNORE INTO \`${tables.estado}\` (\`${estadoCols.id}\`, \`${estadoCols.almacen}\`, \`${estadoCols.banda}\`, \`${estadoCols.mitsubishi}\`, \`${estadoCols.lugar_entrega}\`)
           VALUES (1, 1, 1, 1, 1)
         `);
       } catch (seedErr) {
@@ -303,13 +369,13 @@ app.post('/api/pedidos', async (req, res) => {
     // Reiniciar el estado de todas las estaciones a 1 cada vez que se hace un pedido nuevo
     try {
       await pool.execute(
-        `INSERT INTO \`${tables.estado}\` (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
+        `INSERT INTO \`${tables.estado}\` (\`${estadoCols.id}\`, \`${estadoCols.almacen}\`, \`${estadoCols.banda}\`, \`${estadoCols.mitsubishi}\`, \`${estadoCols.lugar_entrega}\`)
          VALUES (1, 1, 1, 1, 1)
          ON DUPLICATE KEY UPDATE
-           almacen = 1,
-           banda = 1,
-           mitsubishi = 1,
-           lugar_entrega = 1`
+           \`${estadoCols.almacen}\` = 1,
+           \`${estadoCols.banda}\` = 1,
+           \`${estadoCols.mitsubishi}\` = 1,
+           \`${estadoCols.lugar_entrega}\` = 1`
       );
     } catch (estadoErr) {
       console.warn(`Aviso al reiniciar ${tables.estado}:`, estadoErr.message);
@@ -333,9 +399,11 @@ app.post('/api/pedidos', async (req, res) => {
 // 2. Obtener estado del pedido actual (para la vista de progreso y el heartbeat cada 2s)
 app.get('/api/estado', async (req, res) => {
   try {
-    const [rows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` ORDER BY ID_estado DESC LIMIT 1`);
+    const [rows] = await pool.execute(
+      `SELECT * FROM \`${tables.estado}\` ORDER BY \`${estadoCols.id}\` DESC LIMIT 1`
+    );
     if (rows.length > 0) {
-      const est = rows[0];
+      const est = formatEstadoRow(rows[0]);
       const allDone =
         Number(est.almacen) === 2 &&
         Number(est.banda) === 2 &&
@@ -366,8 +434,10 @@ app.put('/api/estado', async (req, res) => {
   const { almacen, banda, mitsubishi, lugar_entrega } = req.body;
   try {
     // Si viene solo un campo o varios, mantenemos los valores previos para los no especificados
-    const [currentRows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` WHERE ID_estado = 1`);
-    const current = currentRows[0] || { almacen: 1, banda: 1, mitsubishi: 1, lugar_entrega: 1 };
+    const [currentRows] = await pool.execute(
+      `SELECT * FROM \`${tables.estado}\` WHERE \`${estadoCols.id}\` = 1`
+    );
+    const current = formatEstadoRow(currentRows[0]) || { almacen: 1, banda: 1, mitsubishi: 1, lugar_entrega: 1 };
 
     const vals = {
       almacen: almacen !== undefined ? Number(almacen) : Number(current.almacen ?? 1),
@@ -377,13 +447,13 @@ app.put('/api/estado', async (req, res) => {
     };
 
     await pool.execute(
-      `INSERT INTO \`${tables.estado}\` (ID_estado, almacen, banda, mitsubishi, lugar_entrega)
+      `INSERT INTO \`${tables.estado}\` (\`${estadoCols.id}\`, \`${estadoCols.almacen}\`, \`${estadoCols.banda}\`, \`${estadoCols.mitsubishi}\`, \`${estadoCols.lugar_entrega}\`)
        VALUES (1, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-         almacen = VALUES(almacen),
-         banda = VALUES(banda),
-         mitsubishi = VALUES(mitsubishi),
-         lugar_entrega = VALUES(lugar_entrega)`,
+         \`${estadoCols.almacen}\` = VALUES(\`${estadoCols.almacen}\`),
+         \`${estadoCols.banda}\` = VALUES(\`${estadoCols.banda}\`),
+         \`${estadoCols.mitsubishi}\` = VALUES(\`${estadoCols.mitsubishi}\`),
+         \`${estadoCols.lugar_entrega}\` = VALUES(\`${estadoCols.lugar_entrega}\`)`,
       [vals.almacen, vals.banda, vals.mitsubishi, vals.lugar_entrega]
     );
 
@@ -420,8 +490,10 @@ app.put('/api/estado', async (req, res) => {
       );
     }
 
-    const [rows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` WHERE ID_estado = 1`);
-    res.json({ success: true, estado: rows[0] });
+    const [rows] = await pool.execute(
+      `SELECT * FROM \`${tables.estado}\` WHERE \`${estadoCols.id}\` = 1`
+    );
+    res.json({ success: true, estado: formatEstadoRow(rows[0]) });
   } catch (error) {
     console.error('Error al actualizar estado:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -478,9 +550,11 @@ app.post('/api/pedido/cancelar', async (req, res) => {
 app.get('/api/pedido/ultimo', async (req, res) => {
   try {
     // Si en la tabla Estado el pedido anterior ya terminó (todo en 2) o tuvo error (4), liberar en_espera antes de consultar
-    const [estRows] = await pool.execute(`SELECT * FROM \`${tables.estado}\` ORDER BY ID_estado DESC LIMIT 1`);
+    const [estRows] = await pool.execute(
+      `SELECT * FROM \`${tables.estado}\` ORDER BY \`${estadoCols.id}\` DESC LIMIT 1`
+    );
     if (estRows.length > 0) {
-      const est = estRows[0];
+      const est = formatEstadoRow(estRows[0]);
       const allDone =
         Number(est.almacen) === 2 &&
         Number(est.banda) === 2 &&
