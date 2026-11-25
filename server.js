@@ -59,6 +59,19 @@ const estadoCols = {
   lugar_entrega: 'lugar_entrega'
 };
 
+// Mapa de nombres reales de columnas de la tabla estado_historico
+const estadoHistoricoCols = {
+  id: 'ID_estado_historico',
+  id_estado: 'ID_estado',
+  almacen: 'almacen',
+  banda: 'banda',
+  mitsubishi: 'mitsubishi',
+  lugar_entrega: 'lugar_entrega',
+  fecha_hora: 'fecha_hora'
+};
+
+let lastLoggedEstadoKey = null;
+
 const normalizeName = (name) =>
   String(name || '')
     .normalize('NFD')
@@ -129,6 +142,66 @@ const refreshEstadoColumns = async () => {
   console.log(`Columnas detectadas en "${tables.estado}":`, estadoCols);
 };
 
+const refreshEstadoHistoricoColumns = async () => {
+  const [colsResult] = await pool.query(`SHOW COLUMNS FROM \`${tables.estado_historico}\``);
+  const colNames = colsResult.map((c) => c.Field);
+
+  const findCol = (candidates) => {
+    const norm = candidates.map(normalizeName);
+    return colNames.find((c) => norm.includes(normalizeName(c))) || null;
+  };
+
+  estadoHistoricoCols.id = findCol(['ID_estado_historico', 'id_estado_historico', 'id']) || colNames[0] || 'ID_estado_historico';
+  estadoHistoricoCols.id_estado = findCol(['ID_estado', 'id_estado']) || 'ID_estado';
+  estadoHistoricoCols.fecha_hora = findCol(['fecha_hora', 'fecha', 'timestamp', 'created_at']) || 'fecha_hora';
+
+  const ensureStationCol = async (candidates, defaultColName) => {
+    let found = findCol(candidates);
+    if (!found) {
+      await pool.query(
+        `ALTER TABLE \`${tables.estado_historico}\` ADD COLUMN \`${defaultColName}\` TINYINT(1) NOT NULL DEFAULT 1`
+      );
+      found = defaultColName;
+    }
+    return found;
+  };
+
+  estadoHistoricoCols.almacen = await ensureStationCol(['almacen', 'almacén'], estadoCols.almacen);
+  estadoHistoricoCols.banda = await ensureStationCol(['banda'], estadoCols.banda);
+  estadoHistoricoCols.mitsubishi = await ensureStationCol(['mitsubishi', 'robot'], estadoCols.mitsubishi);
+  estadoHistoricoCols.lugar_entrega = await ensureStationCol(
+    [
+      estadoCols.lugar_entrega,
+      'lugar_entrega',
+      'lugar_de_entrega',
+      'rampa',
+      'entrega',
+      'zona_entrega',
+      'estacion_entrega',
+      'punto_entrega'
+    ],
+    estadoCols.lugar_entrega
+  );
+
+  console.log(`Columnas detectadas en "${tables.estado_historico}":`, estadoHistoricoCols);
+};
+
+const insertEstadoHistorico = async (vals, idEstado = 1) => {
+  const almacen = Number(vals?.almacen ?? 1);
+  const banda = Number(vals?.banda ?? 1);
+  const mitsubishi = Number(vals?.mitsubishi ?? 1);
+  const lugarEntrega = Number(vals?.lugar_entrega ?? 1);
+
+  await pool.execute(
+    `INSERT INTO \`${tables.estado_historico}\`
+      (\`${estadoHistoricoCols.id_estado}\`, \`${estadoHistoricoCols.almacen}\`, \`${estadoHistoricoCols.banda}\`, \`${estadoHistoricoCols.mitsubishi}\`, \`${estadoHistoricoCols.lugar_entrega}\`, \`${estadoHistoricoCols.fecha_hora}\`)
+     VALUES (?, ?, ?, ?, ?, NOW())`,
+    [Number(idEstado) || 1, almacen, banda, mitsubishi, lugarEntrega]
+  );
+
+  lastLoggedEstadoKey = `${almacen}-${banda}-${mitsubishi}-${lugarEntrega}`;
+};
+
 const formatEstadoRow = (row) => {
   if (!row) return null;
   return {
@@ -191,6 +264,10 @@ const initDatabase = async () => {
           CREATE TABLE IF NOT EXISTS \`estado_historico\` (
             \`ID_estado_historico\` INT NOT NULL AUTO_INCREMENT,
             \`ID_estado\` INT NOT NULL,
+            \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`banda\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1,
             \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`ID_estado_historico\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -246,9 +323,10 @@ const initDatabase = async () => {
         `);
       }
 
-      // 4. Actualizar mapa final de nombres reales de tablas y columnas de Estado
+      // 4. Actualizar mapa final de nombres reales de tablas y columnas de Estado / estado_historico
       await refreshTableNames();
       await refreshEstadoColumns();
+      await refreshEstadoHistoricoColumns();
 
       // 5. Insertar datos iniciales solo si faltan (sin sobrescribir datos existentes)
       try {
@@ -382,9 +460,7 @@ app.post('/api/pedidos', async (req, res) => {
     }
 
     try {
-      await pool.execute(
-        `INSERT INTO \`${tables.estado_historico}\` (ID_estado, fecha_hora) VALUES (1, NOW())`
-      );
+      await insertEstadoHistorico({ almacen: 1, banda: 1, mitsubishi: 1, lugar_entrega: 1 }, 1);
     } catch (histErr) {
       console.warn(`Aviso al registrar ${tables.estado_historico}:`, histErr.message);
     }
@@ -417,6 +493,18 @@ app.get('/api/estado', async (req, res) => {
         await pool.execute(
           `UPDATE \`${tables.pedido_historico}\` SET en_espera = 0 WHERE en_espera = 1`
         );
+      }
+
+      // Si el estado cambió en la tabla Estado (ej. desde PLC/SCADA), registrar el nuevo snapshot en estado_historico
+      const currentKey = `${Number(est.almacen)}-${Number(est.banda)}-${Number(est.mitsubishi)}-${Number(est.lugar_entrega)}`;
+      if (lastLoggedEstadoKey !== null && lastLoggedEstadoKey !== currentKey) {
+        try {
+          await insertEstadoHistorico(est, est.ID_estado);
+        } catch (histErr) {
+          console.warn(`Aviso al registrar cambio en ${tables.estado_historico}:`, histErr.message);
+        }
+      } else if (lastLoggedEstadoKey === null) {
+        lastLoggedEstadoKey = currentKey;
       }
 
       res.json({ success: true, estado: est });
@@ -457,10 +545,8 @@ app.put('/api/estado', async (req, res) => {
       [vals.almacen, vals.banda, vals.mitsubishi, vals.lugar_entrega]
     );
 
-    // Registrar cambio en estado_historico
-    await pool.execute(
-      `INSERT INTO \`${tables.estado_historico}\` (ID_estado, fecha_hora) VALUES (1, NOW())`
-    );
+    // Registrar cambio completo (almacen, banda, mitsubishi, lugar_entrega/rampa) en estado_historico
+    await insertEstadoHistorico(vals, 1);
 
     // Si alguna estación se puso en 4 (Error), guardar en la tabla alarmas y cancelar el pedido activo
     const errorStations = Object.entries(vals)
