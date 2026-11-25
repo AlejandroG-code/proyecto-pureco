@@ -46,6 +46,7 @@ const tables = {
   estado_historico: 'estado_historico',
   alarmas: 'alarmas',
   categoria_piezas: 'categoria_piezas',
+  piezas: 'Piezas',
   almacen: 'Almacen',
   pedido_historico: 'pedido_historico'
 };
@@ -92,6 +93,7 @@ const refreshTableNames = async () => {
   tables.estado_historico = findExisting(['estado_historico'], 'estado_historico');
   tables.alarmas = findExisting(['alarmas'], 'alarmas');
   tables.categoria_piezas = findExisting(['categoria_piezas', 'categoría_piezas'], 'categoria_piezas');
+  tables.piezas = findExisting(['Piezas', 'piezas'], 'Piezas');
   tables.almacen = findExisting(['Almacen', 'almacen', 'Almacén', 'almacén'], 'Almacen');
   tables.pedido_historico = findExisting(['pedido_historico'], 'pedido_historico');
 
@@ -250,10 +252,10 @@ const initDatabase = async () => {
         await pool.query(`
           CREATE TABLE IF NOT EXISTS \`Estado\` (
             \`ID_estado\` TINYINT(1) NOT NULL,
-            \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
-            \`banda\` TINYINT(1) NOT NULL DEFAULT 1,
-            \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 1,
-            \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`almacen\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`banda\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 3,
             PRIMARY KEY (\`ID_estado\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
@@ -264,10 +266,10 @@ const initDatabase = async () => {
           CREATE TABLE IF NOT EXISTS \`estado_historico\` (
             \`ID_estado_historico\` INT NOT NULL AUTO_INCREMENT,
             \`ID_estado\` INT NOT NULL,
-            \`almacen\` TINYINT(1) NOT NULL DEFAULT 1,
-            \`banda\` TINYINT(1) NOT NULL DEFAULT 1,
-            \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 1,
-            \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 1,
+            \`almacen\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`banda\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`mitsubishi\` TINYINT(1) NOT NULL DEFAULT 3,
+            \`lugar_entrega\` TINYINT(1) NOT NULL DEFAULT 3,
             \`fecha_hora\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (\`ID_estado_historico\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -291,8 +293,19 @@ const initDatabase = async () => {
           CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
             \`ID_categoria\` INT NOT NULL,
             \`nombre_categoria\` VARCHAR(50) NOT NULL,
-            \`cantidad\` INT NOT NULL DEFAULT 3,
             PRIMARY KEY (\`ID_categoria\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+      }
+
+      if (!hasTable(['Piezas', 'piezas'])) {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS \`Piezas\` (
+            \`ID_pieza\` INT NOT NULL AUTO_INCREMENT,
+            \`ID_categoria\` INT NOT NULL,
+            \`nombre_pieza\` VARCHAR(50) NOT NULL,
+            \`disponible\` TINYINT(1) NOT NULL DEFAULT 1,
+            PRIMARY KEY (\`ID_pieza\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
       }
@@ -328,25 +341,106 @@ const initDatabase = async () => {
       await refreshEstadoColumns();
       await refreshEstadoHistoricoColumns();
 
-      // 5. Insertar datos iniciales solo si faltan (sin sobrescribir datos existentes)
+      // 5. Insertar datos iniciales solo si faltan (sin pedido activo -> todas las estaciones en 3 = En espera)
       try {
         await pool.query(`
           INSERT IGNORE INTO \`${tables.estado}\` (\`${estadoCols.id}\`, \`${estadoCols.almacen}\`, \`${estadoCols.banda}\`, \`${estadoCols.mitsubishi}\`, \`${estadoCols.lugar_entrega}\`)
-          VALUES (1, 1, 1, 1, 1)
+          VALUES (1, 3, 3, 3, 3)
         `);
+
+        // Si todavía no existe ningún pedido registrado, asegurar que todas las estaciones estén en 3 (En espera)
+        const [pedCountRows] = await pool.query(`SELECT COUNT(*) AS total FROM \`${tables.pedido_historico}\``);
+        if (Number(pedCountRows[0]?.total || 0) === 0) {
+          await pool.query(`
+            UPDATE \`${tables.estado}\`
+            SET \`${estadoCols.almacen}\` = 3,
+                \`${estadoCols.banda}\` = 3,
+                \`${estadoCols.mitsubishi}\` = 3,
+                \`${estadoCols.lugar_entrega}\` = 3
+            WHERE \`${estadoCols.id}\` = 1
+          `);
+        }
       } catch (seedErr) {
         console.warn(`Aviso al inicializar ${tables.estado}:`, seedErr.message);
       }
 
       try {
+        // Quitar columnas 'cantidad' y 'posicion' de categoria_piezas si todavía existen
+        const [catColsResult] = await pool.query(`SHOW COLUMNS FROM \`${tables.categoria_piezas}\``);
+        const catColNames = catColsResult.map((c) => c.Field);
+        for (const col of catColNames) {
+          const norm = normalizeName(col);
+          if (norm === 'cantidad' || norm === 'posicion') {
+            try {
+              await pool.query(`ALTER TABLE \`${tables.categoria_piezas}\` DROP COLUMN \`${col}\``);
+            } catch (dropErr) {
+              console.warn(`Aviso al quitar columna ${col} de ${tables.categoria_piezas}:`, dropErr.message);
+            }
+          }
+        }
+
+        const catIdCol = catColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
+        const catNameCol =
+          catColNames.find((c) => ['nombre_categoria', 'nombre', 'categoria'].includes(normalizeName(c))) ||
+          'nombre_categoria';
+
+        // Asegurar que SOLO existan 3 categorías: 1=Electrónica, 2=Arte, 3=Juguetes
+        try {
+          await pool.query(`DELETE FROM \`${tables.categoria_piezas}\` WHERE \`${catIdCol}\` NOT IN (1, 2, 3)`);
+        } catch (delErr) {
+          console.warn(`Aviso al limpiar categorías extra en ${tables.categoria_piezas}:`, delErr.message);
+        }
+
         await pool.query(`
-          INSERT IGNORE INTO \`${tables.categoria_piezas}\` (\`ID_categoria\`, \`nombre_categoria\`, \`cantidad\`) VALUES
-            (1, 'Electrónica', 3),
-            (2, 'Arte', 3),
-            (3, 'Juguetes', 3)
+          INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`) VALUES
+            (1, 'Electrónica'),
+            (2, 'Arte'),
+            (3, 'Juguetes')
+          ON DUPLICATE KEY UPDATE \`${catNameCol}\` = VALUES(\`${catNameCol}\`)
         `);
       } catch (seedErr) {
         console.warn(`Aviso al inicializar ${tables.categoria_piezas}:`, seedErr.message);
+      }
+
+      try {
+        // Inicializar tabla Piezas con las 9 piezas y su relación a categoria_piezas (ID_categoria)
+        const [piezasColsResult] = await pool.query(`SHOW COLUMNS FROM \`${tables.piezas}\``);
+        const pColNames = piezasColsResult.map((c) => c.Field);
+        const pIdCol = pColNames.find((c) => ['id_pieza', 'id_piezas', 'id'].includes(normalizeName(c))) || 'ID_pieza';
+        const pCatCol = pColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
+        const pNameCol =
+          pColNames.find((c) => ['nombre_pieza', 'nombre', 'pieza'].includes(normalizeName(c))) || 'nombre_pieza';
+        const pDispCol = pColNames.find((c) => normalizeName(c) === 'disponible') || null;
+
+        const defaultPiezas = [
+          [1, 1, 'Computadoras'],
+          [2, 1, 'Celular'],
+          [3, 1, 'Audífonos'],
+          [4, 2, 'Acuarela'],
+          [5, 2, 'Gises pasteles'],
+          [6, 2, 'Plumones'],
+          [7, 3, 'Lego'],
+          [8, 3, 'Juego de mesa'],
+          [9, 3, 'Rompecabezas']
+        ];
+
+        for (const [idPieza, idCat, nombre] of defaultPiezas) {
+          if (pDispCol) {
+            await pool.execute(
+              `INSERT IGNORE INTO \`${tables.piezas}\` (\`${pIdCol}\`, \`${pCatCol}\`, \`${pNameCol}\`, \`${pDispCol}\`)
+               VALUES (?, ?, ?, 1)`,
+              [idPieza, idCat, nombre]
+            );
+          } else {
+            await pool.execute(
+              `INSERT IGNORE INTO \`${tables.piezas}\` (\`${pIdCol}\`, \`${pCatCol}\`, \`${pNameCol}\`)
+               VALUES (?, ?, ?)`,
+              [idPieza, idCat, nombre]
+            );
+          }
+        }
+      } catch (seedErr) {
+        console.warn(`Aviso al inicializar ${tables.piezas}:`, seedErr.message);
       }
 
       try {
@@ -517,21 +611,49 @@ app.get('/api/estado', async (req, res) => {
   }
 });
 
-// 2b. Actualizar manualmente el estado en SQL (desde la ventana de control manual)
-app.put('/api/estado', async (req, res) => {
-  const { almacen, banda, mitsubishi, lugar_entrega } = req.body;
+// 2b. Actualizar estado en SQL (desde el panel de control manual O desde SCADA)
+// Acepta:
+//  - Campos directos: { almacen: 2, banda: 1, mitsubishi: 1, lugar_entrega: 1 } (también acepta "rampa" o el nombre real de la columna)
+//  - Formato estación única desde SCADA: { estacion: "almacen" | "banda" | "mitsubishi" | "lugar_entrega" | "rampa", estado: 2 }
+const handleUpdateEstado = async (req, res) => {
+  const body = req.body || {};
+  let { almacen, banda, mitsubishi, lugar_entrega } = body;
+
+  // Soportar alias de columna de entrega (ej. rampa o el nombre real detectado en BD)
+  if (lugar_entrega === undefined) {
+    if (body[estadoCols.lugar_entrega] !== undefined) {
+      lugar_entrega = body[estadoCols.lugar_entrega];
+    } else if (body.rampa !== undefined) {
+      lugar_entrega = body.rampa;
+    } else if (body.entrega !== undefined) {
+      lugar_entrega = body.entrega;
+    }
+  }
+
+  // Soportar formato individual de SCADA: { estacion: "mitsubishi", estado: 2 }
+  if (body.estacion !== undefined && body.estado !== undefined) {
+    const estNorm = normalizeName(body.estacion);
+    const val = Number(body.estado);
+    if (estNorm === 'almacen') almacen = val;
+    else if (estNorm === 'banda') banda = val;
+    else if (estNorm === 'mitsubishi' || estNorm === 'robot') mitsubishi = val;
+    else if (['lugarentrega', 'lugar_entrega', 'rampa', 'entrega', normalizeName(estadoCols.lugar_entrega)].includes(estNorm)) {
+      lugar_entrega = val;
+    }
+  }
+
   try {
     // Si viene solo un campo o varios, mantenemos los valores previos para los no especificados
     const [currentRows] = await pool.execute(
       `SELECT * FROM \`${tables.estado}\` WHERE \`${estadoCols.id}\` = 1`
     );
-    const current = formatEstadoRow(currentRows[0]) || { almacen: 1, banda: 1, mitsubishi: 1, lugar_entrega: 1 };
+    const current = formatEstadoRow(currentRows[0]) || { almacen: 3, banda: 3, mitsubishi: 3, lugar_entrega: 3 };
 
     const vals = {
-      almacen: almacen !== undefined ? Number(almacen) : Number(current.almacen ?? 1),
-      banda: banda !== undefined ? Number(banda) : Number(current.banda ?? 1),
-      mitsubishi: mitsubishi !== undefined ? Number(mitsubishi) : Number(current.mitsubishi ?? 1),
-      lugar_entrega: lugar_entrega !== undefined ? Number(lugar_entrega) : Number(current.lugar_entrega ?? 1)
+      almacen: almacen !== undefined ? Number(almacen) : Number(current.almacen ?? 3),
+      banda: banda !== undefined ? Number(banda) : Number(current.banda ?? 3),
+      mitsubishi: mitsubishi !== undefined ? Number(mitsubishi) : Number(current.mitsubishi ?? 3),
+      lugar_entrega: lugar_entrega !== undefined ? Number(lugar_entrega) : Number(current.lugar_entrega ?? 3)
     };
 
     await pool.execute(
@@ -584,7 +706,10 @@ app.put('/api/estado', async (req, res) => {
     console.error('Error al actualizar estado:', error);
     res.status(500).json({ success: false, error: error.message });
   }
-});
+};
+
+app.put('/api/estado', handleUpdateEstado);
+app.post('/api/estado', handleUpdateEstado);
 
 // 2c. Cancelar pedido y registrar error en BD cuando el heartbeat detecta estado 4 desde SQL
 app.post('/api/pedido/error', async (req, res) => {
@@ -614,7 +739,7 @@ app.post('/api/pedido/error', async (req, res) => {
   }
 });
 
-// 2d. Cancelar pedido por inactividad
+// 2d. Cancelar pedido por inactividad (regresa todas las estaciones a 3 = En espera)
 app.post('/api/pedido/cancelar', async (req, res) => {
   const { motivo = 'Cancelado por inactividad' } = req.body || {};
   try {
@@ -625,6 +750,16 @@ app.post('/api/pedido/cancelar', async (req, res) => {
       `INSERT INTO \`${tables.alarmas}\` (ID_estado, fecha_hora, descripcion) VALUES (1, NOW(), ?)`,
       [motivo]
     );
+    await pool.execute(
+      `INSERT INTO \`${tables.estado}\` (\`${estadoCols.id}\`, \`${estadoCols.almacen}\`, \`${estadoCols.banda}\`, \`${estadoCols.mitsubishi}\`, \`${estadoCols.lugar_entrega}\`)
+       VALUES (1, 3, 3, 3, 3)
+       ON DUPLICATE KEY UPDATE
+         \`${estadoCols.almacen}\` = 3,
+         \`${estadoCols.banda}\` = 3,
+         \`${estadoCols.mitsubishi}\` = 3,
+         \`${estadoCols.lugar_entrega}\` = 3`
+    );
+    await insertEstadoHistorico({ almacen: 3, banda: 3, mitsubishi: 3, lugar_entrega: 3 }, 1);
     res.json({ success: true, message: 'Pedido cancelado correctamente' });
   } catch (error) {
     console.error('Error al cancelar pedido por inactividad:', error);
@@ -666,15 +801,23 @@ app.get('/api/pedido/ultimo', async (req, res) => {
   }
 });
 
-// 4. Obtener disponibilidad de piezas desde categoría_piezas y Almacén
+// 4. Obtener disponibilidad de piezas desde categoria_piezas, Piezas y Almacen
 app.get('/api/piezas', async (req, res) => {
   try {
     const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);
     const [almacenRows] = await pool.execute(`SELECT * FROM \`${tables.almacen}\``);
+    let piezasRows = [];
+    try {
+      const [rows] = await pool.execute(`SELECT * FROM \`${tables.piezas}\``);
+      piezasRows = rows;
+    } catch {
+      piezasRows = [];
+    }
 
     res.json({
       success: true,
       categoria_piezas: categoriasRows,
+      piezas: piezasRows,
       almacen: almacenRows
     });
   } catch (error) {
@@ -683,7 +826,7 @@ app.get('/api/piezas', async (req, res) => {
   }
 });
 
-// 4b. Actualizar disponibilidad de una pieza o categoría en Almacén y categoría_piezas
+// 4b. Actualizar disponibilidad de una pieza o categoría en Almacen y Piezas
 app.put('/api/piezas/disponibilidad', async (req, res) => {
   const { id_almacen, id_categoria, disponible } = req.body;
   try {
@@ -694,29 +837,43 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
         `UPDATE \`${tables.almacen}\` SET disponible = ? WHERE ID_almacen = ?`,
         [dispVal, Number(id_almacen)]
       );
+      try {
+        await pool.execute(
+          `UPDATE \`${tables.piezas}\` SET disponible = ? WHERE ID_pieza = ?`,
+          [dispVal, Number(id_almacen)]
+        );
+      } catch {
+        // Si la tabla Piezas en BD externa no tiene columna disponible, continuar sin error
+      }
     } else if (id_categoria !== undefined && id_categoria !== null) {
       await pool.execute(
         `UPDATE \`${tables.almacen}\` SET disponible = ? WHERE ID_categoria = ?`,
         [dispVal, Number(id_categoria)]
       );
+      try {
+        await pool.execute(
+          `UPDATE \`${tables.piezas}\` SET disponible = ? WHERE ID_categoria = ?`,
+          [dispVal, Number(id_categoria)]
+        );
+      } catch {
+        // Si la tabla Piezas en BD externa no tiene columna disponible, continuar sin error
+      }
     }
-
-    // Recalcular y sincronizar la columna cantidad en categoria_piezas según las piezas disponibles en Almacen
-    await pool.execute(`
-      UPDATE \`${tables.categoria_piezas}\` c
-      SET c.cantidad = (
-        SELECT COUNT(*)
-        FROM \`${tables.almacen}\` a
-        WHERE a.ID_categoria = c.ID_categoria AND a.disponible = 1
-      )
-    `);
 
     const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);
     const [almacenRows] = await pool.execute(`SELECT * FROM \`${tables.almacen}\``);
+    let piezasRows = [];
+    try {
+      const [rows] = await pool.execute(`SELECT * FROM \`${tables.piezas}\``);
+      piezasRows = rows;
+    } catch {
+      piezasRows = [];
+    }
 
     res.json({
       success: true,
       categoria_piezas: categoriasRows,
+      piezas: piezasRows,
       almacen: almacenRows
     });
   } catch (error) {

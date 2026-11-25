@@ -17,9 +17,9 @@ const STATIONS = [
 
 const STATUS_OPTIONS = [
   { value: 0, label: '0 - Apagado (Desenergizado)', color: 'bg-gray-700 text-white border-gray-800' },
-  { value: 1, label: '1 - En Proceso (Por defecto)', color: 'bg-[#004b93] text-white border-[#003b75]' },
+  { value: 1, label: '1 - En Proceso', color: 'bg-[#004b93] text-white border-[#003b75]' },
   { value: 2, label: '2 - Terminado (Avanzar)', color: 'bg-emerald-600 text-white border-emerald-700' },
-  { value: 3, label: '3 - En espera', color: 'bg-amber-500 text-white border-amber-600' },
+  { value: 3, label: '3 - En espera (Sin pedido)', color: 'bg-amber-500 text-white border-amber-600' },
   { value: 4, label: '4 - Error', color: 'bg-red-600 text-white border-red-700' }
 ]
 
@@ -55,10 +55,10 @@ const CATALOG = [
 
 export default function ManualStateControl() {
   const [estado, setEstado] = useState({
-    almacen: 1,
-    banda: 1,
-    mitsubishi: 1,
-    lugar_entrega: 1
+    almacen: 3,
+    banda: 3,
+    mitsubishi: 3,
+    lugar_entrega: 3
   })
   const [availability, setAvailability] = useState({
     categories: { 'Arte': true, 'Electrónica': true, 'Juguetes': true },
