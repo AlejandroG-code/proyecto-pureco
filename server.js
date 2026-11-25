@@ -293,6 +293,7 @@ const initDatabase = async () => {
           CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
             \`ID_categoria\` INT NOT NULL,
             \`nombre_categoria\` VARCHAR(50) NOT NULL,
+            \`cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
             PRIMARY KEY (\`ID_categoria\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
@@ -365,24 +366,13 @@ const initDatabase = async () => {
       }
 
       try {
-        // Quitar columnas 'cantidad' y 'posicion' de categoria_piezas si todavía existen
         const [catColsResult] = await pool.query(`SHOW COLUMNS FROM \`${tables.categoria_piezas}\``);
         const catColNames = catColsResult.map((c) => c.Field);
-        for (const col of catColNames) {
-          const norm = normalizeName(col);
-          if (norm === 'cantidad' || norm === 'posicion') {
-            try {
-              await pool.query(`ALTER TABLE \`${tables.categoria_piezas}\` DROP COLUMN \`${col}\``);
-            } catch (dropErr) {
-              console.warn(`Aviso al quitar columna ${col} de ${tables.categoria_piezas}:`, dropErr.message);
-            }
-          }
-        }
-
         const catIdCol = catColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
         const catNameCol =
           catColNames.find((c) => ['nombre_categoria', 'nombre', 'categoria'].includes(normalizeName(c))) ||
           'nombre_categoria';
+        const catCantCol = catColNames.find((c) => normalizeName(c) === 'cantidad') || null;
 
         // Asegurar que SOLO existan 3 categorías: 1=Electrónica, 2=Arte, 3=Juguetes
         try {
@@ -391,13 +381,23 @@ const initDatabase = async () => {
           console.warn(`Aviso al limpiar categorías extra en ${tables.categoria_piezas}:`, delErr.message);
         }
 
-        await pool.query(`
-          INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`) VALUES
-            (1, 'Electrónica'),
-            (2, 'Arte'),
-            (3, 'Juguetes')
-          ON DUPLICATE KEY UPDATE \`${catNameCol}\` = VALUES(\`${catNameCol}\`)
-        `);
+        if (catCantCol) {
+          await pool.query(`
+            INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`, \`${catCantCol}\`) VALUES
+              (1, 'Electrónica', 3),
+              (2, 'Arte', 3),
+              (3, 'Juguetes', 3)
+            ON DUPLICATE KEY UPDATE \`${catNameCol}\` = VALUES(\`${catNameCol}\`)
+          `);
+        } else {
+          await pool.query(`
+            INSERT INTO \`${tables.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`) VALUES
+              (1, 'Electrónica'),
+              (2, 'Arte'),
+              (3, 'Juguetes')
+            ON DUPLICATE KEY UPDATE \`${catNameCol}\` = VALUES(\`${catNameCol}\`)
+          `);
+        }
       } catch (seedErr) {
         console.warn(`Aviso al inicializar ${tables.categoria_piezas}:`, seedErr.message);
       }
@@ -858,6 +858,20 @@ app.put('/api/piezas/disponibilidad', async (req, res) => {
       } catch {
         // Si la tabla Piezas en BD externa no tiene columna disponible, continuar sin error
       }
+    }
+
+    // Recalcular y sincronizar la columna cantidad en categoria_piezas según las piezas disponibles en Almacen
+    try {
+      await pool.execute(`
+        UPDATE \`${tables.categoria_piezas}\` c
+        SET c.cantidad = (
+          SELECT COUNT(*)
+          FROM \`${tables.almacen}\` a
+          WHERE a.ID_categoria = c.ID_categoria AND a.disponible = 1
+        )
+      `);
+    } catch {
+      // Continuar si la tabla categoria_piezas no tiene columna cantidad
     }
 
     const [categoriasRows] = await pool.execute(`SELECT * FROM \`${tables.categoria_piezas}\``);

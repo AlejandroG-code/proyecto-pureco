@@ -91,6 +91,7 @@ async function resetDatabase() {
         CREATE TABLE IF NOT EXISTS \`categoria_piezas\` (
           \`ID_categoria\` INT NOT NULL,
           \`nombre_categoria\` VARCHAR(50) NOT NULL,
+          \`cantidad\` TINYINT(1) NOT NULL DEFAULT 3,
           PRIMARY KEY (\`ID_categoria\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
@@ -159,26 +160,30 @@ async function resetDatabase() {
       await conn.query(`TRUNCATE TABLE \`${tableName}\``);
     }
 
-    // 1. Limpiar columnas sobrantes de categoria_piezas (cantidad, posicion) e insertar SOLO las 3 categorías
+    // 1. Insertar SOLO las 3 categorías en categoria_piezas (conservando columnas existentes como cantidad/posicion)
     const [catCols] = await conn.query(`SHOW COLUMNS FROM \`${t.categoria_piezas}\``);
     const catColNames = catCols.map((c) => c.Field);
-    for (const col of catColNames) {
-      const norm = normalizeName(col);
-      if (norm === 'cantidad' || norm === 'posicion') {
-        await conn.query(`ALTER TABLE \`${t.categoria_piezas}\` DROP COLUMN \`${col}\``);
-      }
-    }
     const catIdCol = catColNames.find((c) => normalizeName(c) === 'id_categoria') || 'ID_categoria';
     const catNameCol =
       catColNames.find((c) => ['nombre_categoria', 'nombre', 'categoria'].includes(normalizeName(c))) ||
       'nombre_categoria';
+    const catCantCol = catColNames.find((c) => normalizeName(c) === 'cantidad') || null;
 
-    await conn.query(`
-      INSERT INTO \`${t.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`) VALUES
-        (1, 'Electrónica'),
-        (2, 'Arte'),
-        (3, 'Juguetes')
-    `);
+    if (catCantCol) {
+      await conn.query(`
+        INSERT INTO \`${t.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`, \`${catCantCol}\`) VALUES
+          (1, 'Electrónica', 3),
+          (2, 'Arte', 3),
+          (3, 'Juguetes', 3)
+      `);
+    } else {
+      await conn.query(`
+        INSERT INTO \`${t.categoria_piezas}\` (\`${catIdCol}\`, \`${catNameCol}\`) VALUES
+          (1, 'Electrónica'),
+          (2, 'Arte'),
+          (3, 'Juguetes')
+      `);
+    }
 
     // 2. Insertar las 9 piezas en Piezas con su relación ID_categoria
     const [pCols] = await conn.query(`SHOW COLUMNS FROM \`${t.piezas}\``);
@@ -298,7 +303,7 @@ async function resetDatabase() {
     await conn.query('SET FOREIGN_KEY_CHECKS = 1');
 
     console.log(`\n✅ Base de datos "${dbName}" limpiada y reinicializada correctamente:`);
-    console.log(`   - ${t.categoria_piezas}: 3 categorías (Electrónica, Arte, Juguetes) sin cantidad ni posicion`);
+    console.log(`   - ${t.categoria_piezas}: 3 categorías (Electrónica, Arte, Juguetes)`);
     console.log(`   - ${t.piezas}: 9 piezas con su relación ID_categoria`);
     console.log(`   - ${t.almacen}: 9 posiciones disponibles`);
     console.log(`   - ${t.estado} y ${t.estado_historico}: todas las estaciones en 3 (En espera)`);
